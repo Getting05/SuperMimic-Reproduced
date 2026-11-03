@@ -83,6 +83,7 @@ class MotionLibrary:
         bin_frames: int = 50,
         compact: bool = False,
         store_dtype: torch.dtype = torch.float16,
+        robot_variant: str = "g1",
     ):
         self.device = torch.device(device)
         self.dtype = dtype
@@ -97,6 +98,12 @@ class MotionLibrary:
             q0 = torch.as_tensor(np.asarray(default_joint_pos), dtype=dtype, device=self.device).reshape(-1)
         self.default_joint_pos = q0
 
+        p2_joint_names = None
+        if robot_variant == "p2":
+            from supermimic.envs.p2 import P2_JOINT_NAMES
+
+            p2_joint_names = P2_JOINT_NAMES
+
         clips: list[ClipInfo] = []
         start = 0
         body_idx = root_idx = None
@@ -106,13 +113,17 @@ class MotionLibrary:
         if len(npz_files) == 1 and str(npz_files[0]).endswith(".pt"):
             assert compact, "packed .pt libraries are compact-only"
             pack = torch.load(npz_files[0], map_location="cpu", weights_only=False)
+            if p2_joint_names is not None and tuple(pack.get("joint_names", ())) != p2_joint_names:
+                raise ValueError("Packed P2 motions must use the 29 P2 joints in V3 MJCF order")
             self._ref = pack["ref"].to(device=self.device, dtype=store_dtype)
             clips = [ClipInfo(n, int(st), int(ln)) for n, st, ln in zip(pack["names"], pack["starts"], pack["lengths"])]
             start = int(self._ref.shape[0])
             ref_chunks = None
         for f in (npz_files if ref_chunks is not None else []):
             with np.load(f) as d:
-                if body_idx is None:
+                if p2_joint_names is not None and tuple(d.get("joint_names", ())) != p2_joint_names:
+                    raise ValueError(f"{f}: expected the 29 P2 joints in V3 MJCF order")
+                if body_idx is None or p2_joint_names is not None:
                     names = [str(n) for n in d["body_names"]]
                     body_idx = np.array([names.index(n) for n in self.body_names])
                     root_idx = names.index("pelvis")
@@ -150,7 +161,13 @@ class MotionLibrary:
             from supermimic.data.motion_convert import load_g1_model
             from supermimic.kinematics.g1_fk import G1Kinematics
 
-            self._fk = G1Kinematics(load_g1_model(), device=self.device, dtype=dtype)
+            if robot_variant == "p2":
+                from supermimic.envs.p2 import load_p2_model
+
+                model = load_p2_model()
+            else:
+                model = load_g1_model()
+            self._fk = G1Kinematics(model, device=self.device, dtype=dtype)
             self._tracked_idx = self._fk.body_indices(self.body_names)
 
         self.clip_start = torch.tensor([c.start for c in clips], device=self.device, dtype=torch.long)

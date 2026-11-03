@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from supermimic.config import TrainConfig
 from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
+from supermimic.envs.p2 import load_p2_model
 from supermimic.envs.mdp.motion_library import discover_npz
 from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
@@ -57,6 +58,7 @@ class Trainer:
             SuperMimicEnvCfgArgs(
                 npz_files=[str(f) for f in files],
                 num_envs=cfg.env.num_envs,
+                robot=cfg.env.robot,
                 future_frames=cfg.env.future_frames,
                 episode_length_s=cfg.env.episode_length_s,
                 action_noise_std=cfg.env.action_noise_std,
@@ -78,7 +80,8 @@ class Trainer:
         self.buffer = self.recorder.buffer
         robot = env.scene["robot"]
 
-        fk = G1Kinematics(load_g1_model(), device=self.device)
+        fk_model = load_p2_model() if cfg.env.robot == "p2" else load_g1_model()
+        fk = G1Kinematics(fk_model, device=self.device)
         heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
@@ -126,6 +129,8 @@ class Trainer:
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        if ck["config"]["env"].get("robot", "g1") != self.cfg.env.robot:
+            raise ValueError("Checkpoint robot does not match the training robot")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])

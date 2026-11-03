@@ -226,3 +226,31 @@ The design documents are in Chinese; a full Chinese version of this README follo
 - 方法：Q. Liao, Y. Shao, J. Long, K. Zakka, R. Horowitz, P. Abbeel, K. Sreenath, *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*, CoRL 2026, arXiv:2610.28480。本仓库为独立复现，与作者无关。
 - mjlab、MuJoCo、MuJoCo Warp 按各自许可原样使用。LAFAN1 动作（Ubisoft La Forge，CC BY-NC-ND 4.0）、其 G1 重定向数据和 BONES-SEED 数据均不随仓库分发；演示视频中的参考动作仅作展示，不在本仓库许可范围内。
 - 代码：[MIT](LICENSE)，Copyright (c) 2026 Yuxi Liu。
+
+### Astro P2 V3 with FSQ
+
+Use the `*_retargeted.npz` outputs from the ProtoMotions PyRoki P2 retargeter.
+The converter matches joint names, drops the head angle, resamples to 50 Hz,
+and computes link targets using the P2 model.
+
+```bash
+uv run python scripts/data/convert_p2_retarget.py \
+  --source-dir /path/to/p2_retargeted --output-dir data/npz/p2
+uv run sm-train --env.robot p2 --policy.fsq \
+  --data.npz-dir data/npz/p2 --run-name p2_fsq
+```
+
+For multi-GPU training, pass the same arguments to
+`uv run torchrun --standalone --nproc-per-node=2 -m supermimic.scripts.train`.
+The `--policy.fsq` flag selects 40 scalars with nine levels each and
+straight-through rounding. The policy uses SuperMimic's 930D history and
+680D reference window by default. Checkpoints use SuperMimic's format.
+
+The P2 asset and gains come from
+[ProtoMotions V3 at 6e051d8](https://github.com/Getting05/ProtoMotions/tree/6e051d829e69d452ab851b358b92436120201a87).
+The source experiment applies `p2_deploy_setup.py` and selects
+`astro_p2_deploy_reduced.xml` with `p2_deploy_contract.json`. The training
+asset omits unavailable visual meshes, retains the primitive collisions and
+inertias, and fixes the head at its zero pose. mjlab supplies 29 position
+actuators using the V3 gains and torque limits and the SuperMimic normalized
+action scale (`0.25 * effort_limit / kp`).

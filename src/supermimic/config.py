@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from supermimic.imagination.policy_trainer import PolicyTrainerCfg
 from supermimic.policy.nets import CriticCfg, PolicyCfg
@@ -22,6 +23,7 @@ class DataCfg:
 
 @dataclass
 class EnvCfg:
+    robot: Literal["g1", "p2"] = "g1"
     num_envs: int = 4096
     episode_length_s: float = 10.0
     action_noise_std: float = 0.1

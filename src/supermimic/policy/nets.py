@@ -13,6 +13,7 @@ from supermimic.world_model.heads import OBS_TERMS
 GOAL_DIM = 680
 LATENT_DIM = 32
 ACT_DIM = 29
+FSQ_DIM = 40
 
 
 @dataclass
@@ -20,6 +21,7 @@ class PolicyCfg:
     encoder_hidden: tuple[int, ...] = (2048, 1024, 512, 256)
     decoder_hidden: tuple[int, ...] = (2048, 1024, 512, 256)
     latent_dim: int = LATENT_DIM
+    fsq: bool = False
     history: int = 10
     # Fixed per-term observation scales (divide): joint_pos, joint_vel, base_ang_vel, projected_gravity, actions.
     obs_term_scale: tuple[float, ...] = (1.0, 5.0, 2.0, 1.0, 1.0)
@@ -52,17 +54,23 @@ class MotionEncoder(nn.Module):
     def __init__(self, cfg: PolicyCfg, goal_dim: int | None = None):
         super().__init__()
         goal_dim = goal_dim or cfg.goal_dim
-        self.mlp = MLP(goal_dim, cfg.encoder_hidden, cfg.latent_dim)
+        self.fsq = cfg.fsq
+        self.mlp = MLP(goal_dim, cfg.encoder_hidden, FSQ_DIM if cfg.fsq else cfg.latent_dim)
         self.register_buffer("scale", _goal_scale_vector(cfg, goal_dim))
 
     def forward(self, goal: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(self.mlp(goal * self.scale))
+        latent = torch.tanh(self.mlp(goal * self.scale))
+        if self.fsq:
+            # ProtoMotions V3 uses nine centered levels, eps=1e-4 and encoder scale 1.
+            bounded = latent.float() * (4.5 * (1 - 1e-4))
+            latent = bounded + (bounded.round() - bounded).detach()
+        return latent
 
 
 class Decoder(nn.Module):
     def __init__(self, cfg: PolicyCfg, obs_dim: int = 930):
         super().__init__()
-        self.mlp = MLP(cfg.latent_dim + obs_dim, cfg.decoder_hidden, ACT_DIM, last_gain=cfg.decoder_last_gain)
+        self.mlp = MLP((FSQ_DIM if cfg.fsq else cfg.latent_dim) + obs_dim, cfg.decoder_hidden, ACT_DIM, last_gain=cfg.decoder_last_gain)
         self.register_buffer("scale", _obs_scale_vector(cfg))
 
     def forward(self, z: torch.Tensor, obs_hist: torch.Tensor) -> torch.Tensor:
