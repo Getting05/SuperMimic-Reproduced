@@ -91,12 +91,13 @@ class SuperMimicEnvCfgArgs:
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     robot: str = "g1"
+    p2_advanced_actuators: bool = True
     extra_command_kwargs: dict = field(default_factory=dict)
 
 
 def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     if a.robot == "p2":
-        robot_cfg, action_scale = make_p2_robot()
+        robot_cfg, action_scale = make_p2_robot(a.p2_advanced_actuators)
         foot_geom_regex = P2_FOOT_GEOMS
     else:
         robot_cfg, action_scale = get_g1_robot_cfg(), G1_ACTION_SCALE

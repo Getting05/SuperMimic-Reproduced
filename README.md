@@ -246,11 +246,22 @@ The `--policy.fsq` flag selects 40 scalars with nine levels each and
 straight-through rounding. The policy uses SuperMimic's 930D history and
 680D reference window by default. Checkpoints use SuperMimic's format.
 
-The P2 asset and gains come from
+The P2 asset comes from
 [ProtoMotions V3 at 6e051d8](https://github.com/Getting05/ProtoMotions/tree/6e051d829e69d452ab851b358b92436120201a87).
 The source experiment applies `p2_deploy_setup.py` and selects
 `astro_p2_deploy_reduced.xml` with `p2_deploy_contract.json`. The training
 asset omits unavailable visual meshes, retains the primitive collisions and
-inertias, and fixes the head at its zero pose. mjlab supplies 29 position
-actuators using the V3 gains and torque limits and the SuperMimic normalized
-action scale (`0.25 * effort_limit / kp`).
+inertias, and fixes the head at its zero pose. The 29 position actuators use
+the supplied Astro P2 motor-family PD gains and the SuperMimic normalized action
+scale (`0.25 * effort_limit / kp`).
+
+P2 advanced actuators are enabled by default. They delay position targets by
+1–3 physics steps (5–15 ms), limit drive torque above the joint speed limits,
+and apply the measured motor torque-speed envelopes. Each ankle and the
+waist pitch/roll pair use a fixed-ratio two-motor approximation: motor
+coordinates are pitch + roll and pitch − roll. Joint speed limits restrict
+drive torque, so external forces can still push a joint above its limit.
+Pass `--env.no-p2-advanced-actuators` for built-in position PD with the same
+updated gains. Use the same actuator mode for training and evaluation.
+The world model continues to learn from the current state and action without
+explicit command-delay history.

@@ -59,6 +59,7 @@ class Trainer:
                 npz_files=[str(f) for f in files],
                 num_envs=cfg.env.num_envs,
                 robot=cfg.env.robot,
+                p2_advanced_actuators=cfg.env.p2_advanced_actuators,
                 future_frames=cfg.env.future_frames,
                 episode_length_s=cfg.env.episode_length_s,
                 action_noise_std=cfg.env.action_noise_std,
@@ -131,6 +132,10 @@ class Trainer:
         ck = torch.load(path, map_location=self.device, weights_only=False)
         if ck["config"]["env"].get("robot", "g1") != self.cfg.env.robot:
             raise ValueError("Checkpoint robot does not match the training robot")
+        if self.cfg.env.robot == "p2":
+            previous_mode = ck["config"]["env"].get("p2_advanced_actuators")
+            if previous_mode is None or previous_mode != self.cfg.env.p2_advanced_actuators:
+                raise ValueError("P2 resume requires matching actuator dynamics and PD gains")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])

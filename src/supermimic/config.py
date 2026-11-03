@@ -24,6 +24,7 @@ class DataCfg:
 @dataclass
 class EnvCfg:
     robot: Literal["g1", "p2"] = "g1"
+    p2_advanced_actuators: bool = True
     num_envs: int = 4096
     episode_length_s: float = 10.0
     action_noise_std: float = 0.1
