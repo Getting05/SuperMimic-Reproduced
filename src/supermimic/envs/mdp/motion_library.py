@@ -84,8 +84,12 @@ class MotionLibrary:
         compact: bool = False,
         store_dtype: torch.dtype = torch.float16,
         robot_variant: str = "g1",
+        library_device: str = "gpu",
     ):
         self.device = torch.device(device)
+        if library_device not in ("gpu", "cpu"):
+            raise ValueError("library_device must be gpu or cpu")
+        self.storage_device = self.device if library_device == "gpu" else torch.device("cpu")
         self.dtype = dtype
         self.body_names = tuple(body_names)
         self.bin_frames = int(bin_frames)
@@ -115,7 +119,7 @@ class MotionLibrary:
             pack = torch.load(npz_files[0], map_location="cpu", weights_only=False)
             if p2_joint_names is not None and tuple(pack.get("joint_names", ())) != p2_joint_names:
                 raise ValueError("Packed P2 motions must use the 29 P2 joints in V3 MJCF order")
-            self._ref = pack["ref"].to(device=self.device, dtype=store_dtype)
+            self._ref = pack["ref"].to(device=self.storage_device, dtype=store_dtype)
             clips = [ClipInfo(n, int(st), int(ln)) for n, st, ln in zip(pack["names"], pack["starts"], pack["lengths"])]
             start = int(self._ref.shape[0])
             ref_chunks = None
@@ -147,16 +151,16 @@ class MotionLibrary:
         if ref_chunks is not None:
             ref_np = np.concatenate(ref_chunks, 0)
             assert ref_np.shape[1] == REF_DIM
-            self._ref = torch.as_tensor(ref_np, device=self.device, dtype=store_dtype if compact else dtype)
+            self._ref = torch.as_tensor(ref_np, device=self.storage_device, dtype=store_dtype if compact else dtype)
             del ref_np, ref_chunks
         if not compact:
-            t = lambda arrs: torch.as_tensor(np.concatenate(arrs, 0), dtype=dtype, device=self.device)  # noqa: E731
+            t = lambda arrs: torch.as_tensor(np.concatenate(arrs, 0), dtype=dtype, device=self.storage_device)  # noqa: E731
             self.body_pos_w = t(body_chunks["pos"])
             self.body_quat_w = t(body_chunks["quat"])
             self.body_lin_vel_w = t(body_chunks["lin"])
             self.body_ang_vel_w = t(body_chunks["ang"])
             del body_chunks
-            self.goal_feat = goal_features(self._split(self._ref), q0)
+            self.goal_feat = goal_features(self._split(self._ref), q0.to(self.storage_device))
         else:
             from supermimic.data.motion_convert import load_g1_model
             from supermimic.kinematics.g1_fk import G1Kinematics
@@ -190,16 +194,21 @@ class MotionLibrary:
     def _split(r: torch.Tensor) -> RefState:
         return RefState(r[..., 0:3], r[..., 3:7], r[..., 7:36], r[..., 36:39], r[..., 39:42], r[..., 42:71])
 
+    def _gather(self, tensor: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
+        # CPU mode trades memory for synchronous transfers. The default GPU path
+        # remains a plain gather with no host round trip.
+        return tensor[frame.to(tensor.device)].to(device=self.device, dtype=self.dtype)
+
     def ref(self, frame: torch.Tensor) -> RefState:
-        return self._split(self._ref[frame].to(self.dtype))
+        return self._split(self._gather(self._ref, frame))
 
     def ref71(self, frame: torch.Tensor) -> torch.Tensor:
-        return self._ref[frame].to(self.dtype)
+        return self._gather(self._ref, frame)
 
     def bodies(self, frame: torch.Tensor) -> RefBodies:
         """Tracked-body link states (world) at the given frames."""
         if not self.compact:
-            return RefBodies(self.body_pos_w[frame], self.body_quat_w[frame], self.body_lin_vel_w[frame], self.body_ang_vel_w[frame])
+            return RefBodies(self._gather(self.body_pos_w, frame), self._gather(self.body_quat_w, frame), self._gather(self.body_lin_vel_w, frame), self._gather(self.body_ang_vel_w, frame))
         qpos, qvel = self.ref_qpos_qvel(frame)
         with torch.no_grad():
             out = self._fk(qpos, qvel)
@@ -209,27 +218,27 @@ class MotionLibrary:
     # Convenience column accessors (full fp32 copies; prefer ``ref()`` in hot paths).
     @property
     def root_pos_w(self) -> torch.Tensor:
-        return self._ref[:, 0:3].to(self.dtype)
+        return self._ref[:, 0:3].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_quat_w(self) -> torch.Tensor:
-        return self._ref[:, 3:7].to(self.dtype)
+        return self._ref[:, 3:7].to(device=self.device, dtype=self.dtype)
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self._ref[:, 7:36].to(self.dtype)
+        return self._ref[:, 7:36].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_lin_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 36:39].to(self.dtype)
+        return self._ref[:, 36:39].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 39:42].to(self.dtype)
+        return self._ref[:, 39:42].to(device=self.device, dtype=self.dtype)
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        return self._ref[:, 42:71].to(self.dtype)
+        return self._ref[:, 42:71].to(device=self.device, dtype=self.dtype)
 
     # ------------------------------------------------------------------ queries
 
@@ -246,7 +255,7 @@ class MotionLibrary:
         offs = torch.arange(k, device=self.device)
         idx = torch.minimum(frame[:, None] + offs[None, :], last[:, None])  # (N,k)
         if not self.compact:
-            return self.goal_feat[idx].reshape(frame.shape[0], k * GOAL_FEAT_DIM)
+            return self._gather(self.goal_feat, idx).reshape(frame.shape[0], k * GOAL_FEAT_DIM)
         feat = goal_features(self.ref(idx.reshape(-1)), self.default_joint_pos)
         return feat.reshape(frame.shape[0], k * GOAL_FEAT_DIM)
 
@@ -263,7 +272,7 @@ class MotionLibrary:
         mem = self._ref.numel() * self._ref.element_size() / 1e9
         if not self.compact:
             mem += sum(t.numel() * t.element_size() for t in (self.body_pos_w, self.body_quat_w, self.body_lin_vel_w, self.body_ang_vel_w, self.goal_feat)) / 1e9
-        return f"MotionLibrary({'compact' if self.compact else 'full'}): {self.num_clips} clips, {self.num_frames} frames ({hours:.3f} h @50Hz), {self.num_bins} bins, {mem:.2f} GB on {self.device}"
+        return f"MotionLibrary({'compact' if self.compact else 'full'}): {self.num_clips} clips, {self.num_frames} frames ({hours:.3f} h @50Hz), {self.num_bins} bins, {mem:.2f} GB on {self.storage_device} (compute {self.device})"
 
 
 def discover_npz(directory: str | Path, limit: int | None = None, names: list[str] | None = None, manifest: str | Path | None = None) -> list[Path]:

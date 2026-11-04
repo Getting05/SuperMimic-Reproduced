@@ -13,3 +13,7 @@ wandb/
 .pytest_cache/
 .ruff_cache/
 experiments/**/outputs/
+
+/evals/
+
+/MUJOCO_LOG.TXT

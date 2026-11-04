@@ -53,6 +53,7 @@ class MultiClipMotionCommand(CommandTerm):
         default_joint_pos = self.robot.data.default_joint_pos[0].detach()
         self.library = MotionLibrary(
             cfg.npz_files, cfg.body_names, default_joint_pos, device=self.device, bin_frames=cfg.bin_frames,
+            library_device=cfg.library_device,
             robot_variant=cfg.robot_variant, compact=cfg.compact_library, store_dtype=torch.float16 if cfg.library_fp16 else torch.float32,
         )
         print(f"[INFO] {self.library.summary()}")
@@ -420,6 +421,7 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     max_logged_steps: int = 1024
     robot_variant: str = "g1"
     compact_library: bool = False
+    library_device: Literal["gpu", "cpu"] = "gpu"
     library_fp16: bool = True
     resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)
 

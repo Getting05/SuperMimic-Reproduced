@@ -18,6 +18,7 @@ class DataCfg:
     clips: list[str] | None = None  # None = all npz in npz_dir
     limit: int | None = None
     manifest: Path | None = None  # csv with name,keep (filter_bones_seed.py output)
+    library_device: Literal["gpu", "cpu"] = "gpu"  # reference storage; compute stays on cfg.device
     library: Path | None = None  # packed compact library (.pt from build_library.py); overrides npz_dir
 
 
@@ -52,6 +53,13 @@ class ScheduleCfg:
 
 
 @dataclass
+class WandbCfg:
+    enabled: bool = False
+    project: str = "supermimic"
+    entity: str | None = None
+
+
+@dataclass
 class TrainConfig:
     run_name: str = "debug"
     log_root: Path = Path("logs")
@@ -65,4 +73,5 @@ class TrainConfig:
     critic: CriticCfg = field(default_factory=CriticCfg)
     policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
+    wandb: WandbCfg = field(default_factory=WandbCfg)
     resume: Path | None = None

@@ -7,7 +7,7 @@ from pathlib import Path
 import mujoco
 
 _ASSETS = Path(__file__).resolve().parents[1] / "assets"
-_XML = _ASSETS / "astro_p2_deploy_reduced.xml"
+_XML = _ASSETS / "docker150/astro_p2/mjcf/astro_p2_supermimic.xml"
 _CONTRACT = json.loads((_ASSETS / "p2_deploy_contract.json").read_text())
 P2_JOINT_NAMES = tuple(_CONTRACT["joint_names"][:-1])
 P2_FOOT_GEOMS = r"^(left|right)_foot_capsule_collision[1-8]$"

@@ -15,7 +15,6 @@ from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.p2 import load_p2_model
 from supermimic.envs.mdp.motion_library import discover_npz
-from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy
@@ -69,6 +68,7 @@ class Trainer:
                 sampling_mode=cfg.env.sampling_mode,
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
+                library_device=cfg.data.library_device,
                 anchor_obs=cfg.env.anchor_obs,
                 seed=cfg.seed + 1000 * self.rank,
             ),
@@ -83,7 +83,7 @@ class Trainer:
 
         fk_model = load_p2_model() if cfg.env.robot == "p2" else load_g1_model()
         fk = G1Kinematics(fk_model, device=self.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(fk, self.command.cfg.body_names, self.command.cfg.anchor_body_name, self.command.cfg.root_body_name, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
@@ -156,6 +156,26 @@ class Trainer:
         return self.policy(obs["policy"], obs["goal"])
 
     def run(self) -> None:
+        wandb_run = None
+        try:
+            if self.is_main and self.cfg.wandb.enabled:
+                import wandb
+
+                wandb_run = wandb.init(
+                    project=self.cfg.wandb.project,
+                    entity=self.cfg.wandb.entity,
+                    name=self.cfg.run_name,
+                    dir=str(self.log_dir),
+                    config=json.loads((self.log_dir / "config.json").read_text()),
+                )
+            self._run(wandb_run)
+        finally:
+            if self.writer is not None:
+                self.writer.close()
+            if wandb_run is not None:
+                wandb_run.finish()
+
+    def _run(self, wandb_run) -> None:
         cfg = self.cfg
         sch = cfg.schedule
         env = self.env
@@ -225,35 +245,44 @@ class Trainer:
                     n_finished = int(round(cnt))
                 else:
                     n_finished = len(finished_returns)
+                metrics: dict[str, float] = {}
                 if not self.is_main:
                     agg, agg_n = {}, 0
                     finished_returns, finished_lens = [], []
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
                     for k, v in agg.items():
-                        self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
+                        metrics[k] = v / (agg_n if k != "lr" else 1)
                 if not self.is_main:
                     tr = float("nan")
                 elif finished_returns:
                     tr = sum(finished_returns) / len(finished_returns)
-                    self.writer.add_scalar("train/episode_norm_return", tr, it)
-                    self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
+                    metrics["train/episode_norm_return"] = tr
+                    metrics["train/episode_len"] = sum(finished_lens) / max(len(finished_lens), 1)
                 else:
                     tr = float("nan")
                 with torch.no_grad():
                     if self.is_main and self.buffer.size > 2048:
                         err = self.wm_trainer.online_error(self.buffer, n=1024, k=8)
-                        self.writer.add_scalar("wm/online_nse_1step", float(err[0]), it)
-                        self.writer.add_scalar("wm/online_nse_8step", float(err[-1]), it)
+                        metrics["wm/online_nse_1step"] = float(err[0])
+                        metrics["wm/online_nse_8step"] = float(err[-1])
                     else:
                         err = None
                 if self.is_main:
                     for k, v in timers.items():
-                        self.writer.add_scalar(f"time/{k}_s_per_iter", v / sch.log_interval, it)
-                    self.writer.add_scalar("time/hours", elapsed / 3600, it)
-                    self.writer.add_scalar("time/updates", self.num_updates, it)
-                    self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
-                    self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
+                        metrics[f"time/{k}_s_per_iter"] = v / sch.log_interval
+                    metrics["gpu/peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 1024**3
+                    metrics["gpu/reserved_gib"] = torch.cuda.memory_reserved() / 1024**3
+                    metrics["gpu/free_gib"] = torch.cuda.mem_get_info()[0] / 1024**3
+                    metrics["time/env_steps_per_s"] = it * env.num_envs * self.world / elapsed
+                    metrics["time/hours"] = elapsed / 3600
+                    metrics["time/updates"] = self.num_updates
+                    metrics["sampler/entropy"] = float(self.command.metrics["sampling_entropy"][0])
+                    metrics["sampler/bin_return_mean"] = float(self.command.bin_return.mean())
+                    for name, value in metrics.items():
+                        self.writer.add_scalar(name, value, it)
+                    if wandb_run is not None:
+                        wandb_run.log(metrics, step=it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (
