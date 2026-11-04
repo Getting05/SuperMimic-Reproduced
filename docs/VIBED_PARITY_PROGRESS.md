@@ -79,3 +79,7 @@ Time-major transition ring and reset-safe recorder implemented. 24 targeted test
 ## Stage 7
 
 ELU policy/critic, RunningNorm with distributed batch moments, normalized 99D per-frame policy input, 914D critic with body/joint/root errors implemented. 26 targeted tests passed in 9.28s after fixing a decoder syntax error caught at collection. P2 simulator + WM/policy/critic optimizer smoke passed: NORM_CRITIC_TRAIN_OK. Full distributed smoke remains final validation.
+
+## Stage 8
+
+Direct 70D local increments, LayerNorm+SiLU dynamics, 133/70 RunningNorm, masked dimension-mean/time-sum loss, analytic termination implemented. 28 tests passed in 9.85s, including target/integrate closure and 8-step backward. Real P2 joint WM/actor/critic smoke passed. Compile profiling remains final validation.

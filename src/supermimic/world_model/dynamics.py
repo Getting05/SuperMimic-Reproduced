@@ -7,12 +7,14 @@ import torch.nn as nn
 
 
 class MLP(nn.Module):
-    def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int, act=nn.SiLU, zero_last: bool = False, last_gain: float | None = None):
+    def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int, act=nn.SiLU, zero_last: bool = False, last_gain: float | None = None, layer_norm: bool = False):
         super().__init__()
         layers: list[nn.Module] = []
         d = in_dim
         for h in hidden:
-            layers += [nn.Linear(d, h), act()]
+            layers += [nn.Linear(d, h)]
+            if layer_norm: layers.append(nn.LayerNorm(h))
+            layers.append(act())
             d = h
         last = nn.Linear(d, out_dim)
         if zero_last:
@@ -34,7 +36,7 @@ class DynamicsMLP(nn.Module):
 
     def __init__(self, feat_dim: int = 71, act_dim: int = 29, xi_dim: int = 33, hidden=(2048, 2048, 2048), out_dim: int = 70):
         super().__init__()
-        self.mlp = MLP(feat_dim + act_dim + xi_dim, tuple(hidden), out_dim, zero_last=True)
+        self.mlp = MLP(feat_dim + act_dim + xi_dim, tuple(hidden), out_dim, zero_last=True, layer_norm=True)
 
     def forward(self, feat: torch.Tensor, action: torch.Tensor, xi_norm: torch.Tensor) -> torch.Tensor:
         return self.mlp(torch.cat([feat, action, xi_norm], dim=-1))

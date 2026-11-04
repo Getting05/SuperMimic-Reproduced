@@ -251,6 +251,8 @@ class Trainer:
             action = self.act(obs)
             action = execution_action(action, cfg.env.action_noise_std)
             obs, rew, term, tout, extras = env.step(action)
+            row=(self.buffer.ptr-1)%self.buffer.T
+            self.wm.update_normalization(self.buffer.s[row],self.buffer.s1[row],self.buffer.a[row],self.buffer.xi[row])
             self.ep_reward_sum += rew
             self.ep_len += 1
             done = term | tout

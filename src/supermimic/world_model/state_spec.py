@@ -91,32 +91,26 @@ class StateSpec:
     # ------------------------------------------------------------------ integration
 
     def integrate(self, s: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
-        """Apply the (unscaled) network output ``delta`` (…, 70) to state ``s`` (…, 71)."""
-        d = delta * self.out_scale
-        dv_h, dw_b, dqd, dp_h, dth_b, dq = d[..., 0:3], d[..., 3:6], d[..., 6:35], d[..., 35:38], d[..., 38:41], d[..., 41:70]
-        p, q, qj, v, w, qd = self.split(s)
-        q = quat_normalize(q)
-        hq = heading_quat(q)
-        v_new = v + quat_apply(hq, dv_h)
-        w_new = w + dw_b
-        qd_new = qd + dqd
-        dt = self.dt if self.cfg.explicit_integration else 0.0
-        p_new = p + dt * v_new + quat_apply(hq, dp_h)
-        q_new = quat_normalize(quat_mul(q, quat_from_rotvec(dt * w_new + dth_b)))
-        qj_new = qj + dt * qd_new + dq
-        return torch.cat([p_new, q_new, v_new, quat_apply(q_new, w_new), qj_new, qd_new], dim=-1)
+        """Integrate direct frame-local increments; no constant-velocity prior."""
+        p,q,qj,v,_,qd=self.split(s)
+        w=s[...,10:13]
+        dp,dth,dv,dw,dq,dqd=delta.split((3,3,3,3,29,29),-1)
+        q_new=quat_normalize(quat_mul(q,quat_from_rotvec(dth)))
+        return torch.cat((p+quat_apply(heading_quat(q),dp),q_new,
+            v+quat_apply(q,dv),w+quat_apply(q,dw),qj+dq,qd+dqd),-1)
+
+    def targets(self,s,s1):
+        p,q,j,v,_,jd=self.split(s)
+        p1,q1,j1,v1,_,jd1=self.split(s1)
+        return torch.cat((quat_apply_inverse(heading_quat(q),p1-p),
+            rotvec_from_quat(quat_mul(quat_apply_inverse_quat(q),q1)),
+            quat_apply_inverse(q,v1-v),quat_apply_inverse(q,s1[...,10:13]-s[...,10:13]),
+            j1-j,jd1-jd),-1)
 
     # ------------------------------------------------------------------ errors
 
     def error_vector(self, s_pred: torch.Tensor, s_true: torch.Tensor) -> torch.Tensor:
-        """Normalised 70-d error [dp, rotvec, dv, dw, dq, dqd] / sigma."""
-        p1, q1, qj1, v1, w1, qd1 = self.split(s_pred)
-        p2, q2, qj2, v2, w2, qd2 = self.split(s_true)
-        q1 = quat_normalize(q1)
-        q2 = quat_normalize(q2)
-        rot_err = rotvec_from_quat(quat_mul(quat_apply_inverse_quat(q2), q1))
-        err = torch.cat([p1 - p2, rot_err, v1 - v2, w1 - w2, qj1 - qj2, qd1 - qd2], dim=-1)
-        return err / self.err_scale
+        return self.targets(s_true,s_pred)/self.err_scale
 
     def normalized_sq_error(self, s_pred: torch.Tensor, s_true: torch.Tensor) -> torch.Tensor:
         """Mean over dims of the squared normalised error (the reported 'prediction error')."""
