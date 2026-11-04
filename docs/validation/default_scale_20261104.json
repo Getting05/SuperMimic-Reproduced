@@ -1,0 +1,243 @@
+{
+  "tested_commit": "529bca2be9b940956f6e3d7c4eb6cdda33042b50",
+  "scope": "Default-width numerical/scale validation on one official mix5clean v2 shard; not convergence training",
+  "single_gpu": {
+    "config": {
+      "num_envs": 4096,
+      "wm_batch": 2048,
+      "wm_minibatches": 10,
+      "window": 8,
+      "policy_batch": 4096,
+      "horizon": 32,
+      "library": "/root/code/SuperMimic-Reproduced/data/motions/mix5clean_v2_supermimic_p2_50hz/train_h200_rank4/rank_00.pt",
+      "storage": "cpu",
+      "wm_hidden": [
+        2048,
+        2048,
+        2048
+      ],
+      "encoder_hidden": [
+        2048,
+        1024,
+        512,
+        256
+      ]
+    },
+    "phases": {
+      "initialized": {
+        "clips": 27983,
+        "frames": 41387980,
+        "replay_gib": 3.620147705078125
+      },
+      "collect64": {
+        "seconds": 20.91527314996347,
+        "rows": 64,
+        "sgs_updates": 4896
+      },
+      "wm_default_update": {
+        "seconds": 4.277585625182837,
+        "metrics": {
+          "state_loss": 5.13946762084961,
+          "nse_1step": 0.944037914276123,
+          "nse_kstep": 10.001468658447266,
+          "loss": 41.11574096679688,
+          "grad_norm": 51.112255859375
+        }
+      },
+      "policy_default_update": {
+        "seconds": 13.04754748288542,
+        "metrics": {
+          "imag_objective": 0.821465253829956,
+          "imag_return_undisc": 0.9705487489700317,
+          "imag_reward_mean": 0.031419962644577026,
+          "imag_survival_H": 0.5054115056991577,
+          "imag_dhat_mean": 0.17840398848056793,
+          "policy_grad_norm": 0.11887498944997787,
+          "policy_skipped_nonfinite": 0.0,
+          "action_abs_mean": 0.0003240018559154123,
+          "imag_r/motion_global_root_pos": 0.004312206991016865,
+          "imag_r/motion_global_root_ori": 0.002593286568298936,
+          "imag_r/motion_body_pos": 0.009835097938776016,
+          "imag_r/motion_body_ori": 0.0010715896496549249,
+          "imag_r/motion_body_lin_vel": 0.006045621354132891,
+          "imag_r/motion_body_ang_vel": 0.00862230733036995,
+          "imag_r/action_rate_l2": -1.744614382914733e-05,
+          "imag_r/joint_limit": -0.0010426962981000543,
+          "critic_loss": 0.033525727689266205,
+          "critic_value_mean": -0.08009970933198929,
+          "critic_target_mean": 0.2023470103740692
+        }
+      },
+      "completed": {
+        "peak_gib": 23.287587642669678,
+        "reserved_gib": 25.26953125,
+        "free_gib": 108.55767822265625
+      }
+    }
+  },
+  "two_gpu": [
+    {
+      "config": {
+        "num_envs": 4096,
+        "wm_batch": 2048,
+        "wm_minibatches": 10,
+        "window": 8,
+        "policy_batch": 4096,
+        "horizon": 32,
+        "library": "/root/code/SuperMimic-Reproduced/data/motions/mix5clean_v2_supermimic_p2_50hz/train_h200_rank4/rank_00.pt",
+        "storage": "cpu",
+        "wm_hidden": [
+          2048,
+          2048,
+          2048
+        ],
+        "encoder_hidden": [
+          2048,
+          1024,
+          512,
+          256
+        ]
+      },
+      "phases": {
+        "initialized": {
+          "clips": 27983,
+          "frames": 41387980,
+          "replay_gib": 3.620147705078125
+        },
+        "collect64": {
+          "seconds": 20.18628452392295,
+          "rows": 64,
+          "sgs_updates": 4897
+        },
+        "wm_default_update": {
+          "seconds": 2.8315856573171914,
+          "metrics": {
+            "state_loss": 4.729195022583008,
+            "nse_1step": 0.906208610534668,
+            "nse_kstep": 9.125367736816406,
+            "loss": 37.833560180664065,
+            "grad_norm": 44.59871215820313
+          }
+        },
+        "policy_default_update": {
+          "seconds": 12.47659045085311,
+          "metrics": {
+            "imag_objective": 0.937063455581665,
+            "imag_return_undisc": 1.108916163444519,
+            "imag_reward_mean": 0.03639542683959007,
+            "imag_survival_H": 0.5412817001342773,
+            "imag_dhat_mean": 0.1811225712299347,
+            "policy_grad_norm": 0.13386160135269165,
+            "policy_skipped_nonfinite": 0.0,
+            "action_abs_mean": 0.0003138984611723572,
+            "imag_r/motion_global_root_pos": 0.004518118686974049,
+            "imag_r/motion_global_root_ori": 0.0028395960107445717,
+            "imag_r/motion_body_pos": 0.010335108265280724,
+            "imag_r/motion_body_ori": 0.0011694421991705894,
+            "imag_r/motion_body_lin_vel": 0.00756192347034812,
+            "imag_r/motion_body_ang_vel": 0.010754506103694439,
+            "imag_r/action_rate_l2": -1.7444381228415295e-05,
+            "imag_r/joint_limit": -0.0007658213144168258,
+            "critic_loss": 0.03435405343770981,
+            "critic_value_mean": -0.07857929915189743,
+            "critic_target_mean": 0.2479611337184906
+          }
+        },
+        "completed": {
+          "world_size": 2,
+          "peak_gib": 23.27954626083374,
+          "reserved_gib": 25.275390625,
+          "free_gib": 107.69830322265625
+        }
+      }
+    },
+    {
+      "config": {
+        "num_envs": 4096,
+        "wm_batch": 2048,
+        "wm_minibatches": 10,
+        "window": 8,
+        "policy_batch": 4096,
+        "horizon": 32,
+        "library": "/root/code/SuperMimic-Reproduced/data/motions/mix5clean_v2_supermimic_p2_50hz/train_h200_rank4/rank_00.pt",
+        "storage": "cpu",
+        "wm_hidden": [
+          2048,
+          2048,
+          2048
+        ],
+        "encoder_hidden": [
+          2048,
+          1024,
+          512,
+          256
+        ]
+      },
+      "phases": {
+        "initialized": {
+          "clips": 27983,
+          "frames": 41387980,
+          "replay_gib": 3.620147705078125
+        },
+        "collect64": {
+          "seconds": 19.855493694078177,
+          "rows": 64,
+          "sgs_updates": 4913
+        },
+        "wm_default_update": {
+          "seconds": 2.831234789919108,
+          "metrics": {
+            "state_loss": 4.818983459472657,
+            "nse_1step": 0.9337997436523438,
+            "nse_kstep": 9.240045166015625,
+            "loss": 38.55186767578125,
+            "grad_norm": 44.59871215820313
+          }
+        },
+        "policy_default_update": {
+          "seconds": 12.474884589202702,
+          "metrics": {
+            "imag_objective": 0.9458604454994202,
+            "imag_return_undisc": 1.1206188201904297,
+            "imag_reward_mean": 0.036698117852211,
+            "imag_survival_H": 0.5489521622657776,
+            "imag_dhat_mean": 0.1796092838048935,
+            "policy_grad_norm": 0.13386160135269165,
+            "policy_skipped_nonfinite": 0.0,
+            "action_abs_mean": 0.0003132279380224645,
+            "imag_r/motion_global_root_pos": 0.004609980154782534,
+            "imag_r/motion_global_root_ori": 0.0027875122614204884,
+            "imag_r/motion_body_pos": 0.010409235954284668,
+            "imag_r/motion_body_ori": 0.0011471337638795376,
+            "imag_r/motion_body_lin_vel": 0.007670988328754902,
+            "imag_r/motion_body_ang_vel": 0.010833392851054668,
+            "imag_r/action_rate_l2": -1.748213435348589e-05,
+            "imag_r/joint_limit": -0.0007426416268572211,
+            "critic_loss": 0.03478598967194557,
+            "critic_value_mean": -0.08010541647672653,
+            "critic_target_mean": 0.251158744096756
+          }
+        },
+        "completed": {
+          "world_size": 2,
+          "peak_gib": 23.27954626083374,
+          "reserved_gib": 25.275390625,
+          "free_gib": 107.69830322265625
+        }
+      }
+    }
+  ],
+  "wm_compile": {
+    "eager": {
+      "loss": 3.2929563522338867,
+      "gradient_norm": 7.405563831329346,
+      "seconds": 2.4864313770085573
+    },
+    "compiled": {
+      "loss": 3.2929563522338867,
+      "gradient_norm": 7.405566692352295,
+      "seconds": 30.979519730899483
+    },
+    "peak_gib": 1.2161531448364258
+  }
+}

@@ -202,3 +202,32 @@ and converts only the original source's actual-step-normalized baseline return.
 The million-transition values are examples, not measured runs.
 
 Actual final dimension print: state71, obs99, goal730, wm_input133, delta70, critic914. Training termination causes are logged as rank0 counters.
+
+## Default-scale follow-up validation, 2026-11-04
+
+The user authorized ending the source training runs before these tests.
+The two source launchers and all six ranks exited after SIGTERM; no SIGKILL was
+needed. Last saved source checkpoints: FSQ102000 and baseline103000.
+Existing source checkpoints were retained; old training was not restarted.
+
+- Official mix5clean v2 rank00 shard:27983 clips/41387980 frames, CPU library.
+- Full default network widths;4096 envs/rank,1000 replay rows.
+-64 vectorized collect steps,10 WM minibatches of2048×8.
+-One policy update using4096×32 imagination and the configured5×4 critic updates.
+-Single GPU: all metrics/parameters finite; peak23.2876GiB; replay3.6201GiB.
+-Two GPUs/NCCL+SGS: same4096 envs per rank; all metrics/parameters finite;
+ cross-rank WM/policy/critic normalization statistics matched; peak23.2795GiB/rank.
+-Default-width2048×8 WM eager and compiled forward/backward passed:
+ loss3.292956 in both; gradient norms7.405564/7.405567.
+-These are direct numerical update tests, not a500-round warmup or trained benchmark.
+-No training checkpoint from the direct scale test is retained.
+-Raw structured results: docs/validation/default_scale_20261104.json.
+-Formal equal-transition long-run A/B and full-corpus evaluation remain unperformed.
+
+Reproduce the scale and WM compilation checks:
+
+~~~bash
+PARITY_VALIDATION_LIBRARY=/path/to/official-shard.pt CUDA_VISIBLE_DEVICES=1   PYTHONPATH=$PWD/src python tests/parity_scale_validation.py
+PARITY_VALIDATION_LIBRARY=/path/to/official-shard.pt CUDA_VISIBLE_DEVICES=3,5   SM_DIST_BACKEND=nccl PYTHONPATH=$PWD/src   torchrun --standalone --nproc-per-node=2 tests/parity_scale_validation.py
+CUDA_VISIBLE_DEVICES=2 PYTHONPATH=$PWD/src   python tests/parity_wm_compile_validation.py
+~~~
