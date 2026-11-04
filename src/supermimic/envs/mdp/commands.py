@@ -13,6 +13,8 @@ functions work unchanged, plus:
 from __future__ import annotations
 
 import math
+import hashlib
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -29,6 +31,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 from supermimic.envs.mdp.motion_library import MotionLibrary
+from supermimic.envs.mdp.sgs_sampler import SGSSampler
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
@@ -58,6 +61,25 @@ class MultiClipMotionCommand(CommandTerm):
         print(f"[INFO] {self.library.summary()}")
         lib = self.library
 
+        self.sgs_sampler = None
+        self.sgs_signature = None
+        if cfg.sgs_eval_steps < 1 or cfg.sgs_root_pos_threshold <= 0 or cfg.sgs_body_pos_threshold <= 0:
+            raise ValueError("SGS horizon and error thresholds must be positive")
+        if cfg.sampling_mode == "sgs":
+            digest = hashlib.sha256()
+            for file in cfg.npz_files:
+                with Path(file).open("rb") as stream:
+                    while chunk := stream.read(8 * 1024 * 1024):
+                        digest.update(chunk)
+            self.sgs_signature = digest.hexdigest()
+            # End-exclusive interval of legal start frames for each bin.
+            self.sgs_bin_end = torch.minimum(lib.bin_end, lib.clip_last[lib.bin_clip] - cfg.sgs_eval_steps + 2)
+            valid = self.sgs_bin_end > lib.bin_start
+            self.sgs_sampler = SGSSampler(
+                lib.num_bins, valid, history=cfg.sgs_history, target=cfg.sgs_target,
+                kappa=cfg.sgs_kappa, temperature=cfg.sgs_temperature, eps=cfg.sgs_eps,
+            )
+            print(f"[INFO] SGS valid bins {int(valid.sum())}/{lib.num_bins}; excluded {int((~valid).sum())}")
         n = self.num_envs
         self.frame = torch.zeros(n, dtype=torch.long, device=self.device)
         self.clip_end = torch.zeros(n, dtype=torch.bool, device=self.device)
@@ -75,6 +97,13 @@ class MultiClipMotionCommand(CommandTerm):
         self.ep_rewards = torch.zeros(n, self.max_ep_steps, device=self.device)
         self.ep_bins = torch.zeros(n, self.max_ep_steps, dtype=torch.long, device=self.device)
         self.ep_len = torch.zeros(n, dtype=torch.long, device=self.device)
+        self.episode_start_bin = torch.full((n,), -1, dtype=torch.long, device=self.device)
+        self.sgs_active = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self.sgs_steps = torch.zeros(n, dtype=torch.long, device=self.device)
+        self.sgs_root_sum = torch.zeros(n, device=self.device)
+        self.sgs_body_sum = torch.zeros(n, device=self.device)
+        self.sgs_last_step = -1
+        self.sgs_finished = torch.zeros(4, device=self.device)  # count, successes, root mean sum, body mean sum
         self._gamma_pow = cfg.gamma ** torch.arange(self.max_ep_steps, device=self.device, dtype=torch.float64)
         self.bootstrap_fn = None  # optional: env_ids -> value estimate for truncated episodes
 
@@ -244,11 +273,86 @@ class MultiClipMotionCommand(CommandTerm):
         self.metrics["episode_return_to_go"][env_ids] = rtg[:, 0].float()
         self.ep_len[env_ids] = 0
 
+    def record_sgs_step(self) -> torch.Tensor:
+        """Called by the SGS timeout term before simulator state is reset."""
+        step = self._env.common_step_counter
+        if self.sgs_last_step != step:
+            root_error = torch.norm(self.root_pos_w - self.robot_root_pos_w, dim=-1)
+            body_error = torch.norm(self.body_pos_w - self.robot_body_pos_w, dim=-1).mean(-1)
+            self.sgs_root_sum += root_error * self.sgs_active
+            self.sgs_body_sum += body_error * self.sgs_active
+            self.sgs_steps += self.sgs_active.long()
+            self.sgs_last_step = step
+        return self.sgs_active & (self.sgs_steps >= self.cfg.sgs_eval_steps)
+
+    def _finalize_sgs(self, env_ids: torch.Tensor) -> None:
+        manager = self._env.termination_manager
+        ended = manager.terminated[env_ids] | manager.time_outs[env_ids]
+        ids = env_ids[self.sgs_active[env_ids] & ended & (self.sgs_steps[env_ids] > 0)]
+        root = self.sgs_root_sum[ids] / self.sgs_steps[ids].clamp_min(1)
+        body = self.sgs_body_sum[ids] / self.sgs_steps[ids].clamp_min(1)
+        success = ((self.sgs_steps[ids] == self.cfg.sgs_eval_steps)
+                   & ~manager.terminated[ids]
+                   & (root < self.cfg.sgs_root_pos_threshold)
+                   & (body < self.cfg.sgs_body_pos_threshold))
+        self.sgs_sampler.update(self.episode_start_bin[ids], success)
+        self.sgs_finished += torch.stack((torch.ones_like(root).sum(), success.sum(), root.sum(), body.sum()))
+        self.sgs_active[env_ids] = False
+        self.sgs_steps[env_ids] = 0
+        self.sgs_root_sum[env_ids] = 0
+        self.sgs_body_sum[env_ids] = 0
+
+    def sgs_state_dict(self):
+        return {
+            "signature": self.sgs_signature,
+            "parameters": {name: getattr(self.cfg, name) for name in self.cfg.__dataclass_fields__
+                           if name.startswith("sgs_") or name == "bin_frames"},
+            "sampler": self.sgs_sampler.state_dict(),
+        }
+
+    def load_sgs_state_dict(self, state):
+        expected = self.sgs_state_dict()
+        if state["signature"] != expected["signature"] or state["parameters"] != expected["parameters"]:
+            raise ValueError("SGS checkpoint dataset/order or success configuration mismatch")
+        if not torch.equal(state["sampler"]["valid"].to(self.device), self.sgs_sampler.valid):
+            raise ValueError("SGS checkpoint valid-bin set mismatch")
+        self.sgs_sampler.load_state_dict(state["sampler"])
+
+    def sgs_logs(self):
+        sampler = self.sgs_sampler
+        valid = sampler.valid
+        p = sampler.probabilities()[valid]
+        rates = sampler.success_rate[valid]
+        count, successes, root, body = self.sgs_finished
+        denom = count.clamp_min(1)
+        clip_sum = torch.zeros(self.library.num_clips, device=self.device)
+        clip_count = torch.zeros_like(clip_sum)
+        clip_sum.index_add_(0, self.library.bin_clip[valid], rates)
+        clip_count.index_add_(0, self.library.bin_clip[valid], torch.ones_like(rates))
+        logs = {
+            "sgs/success_rate_mean": rates.mean(),
+            "sgs/sampling_entropy": -(p * p.log()).sum(),
+            "sgs/num_valid_bins": valid.sum(),
+            "sgs/num_excluded_bins": (~valid).sum(),
+            "sgs/num_unvisited_bins": (sampler.count[valid] == 0).sum(),
+            "sgs/zero_success_bin_ratio": (rates == 0).float().mean(),
+            "sgs/episode_success_rate": successes / denom,
+            "sgs/mean_root_pos_error": root / denom,
+            "sgs/mean_body_pos_error": body / denom,
+            "sgs/total_success_updates": sampler.total_updates,
+        }
+        self.sgs_finished.zero_()
+        return logs, rates, clip_sum[clip_count > 0] / clip_count[clip_count > 0]
+
     # ------------------------------------------------------------------ sampling
 
     def _sample_frames(self, n: int) -> torch.Tensor:
         lib = self.library
         cfg = self.cfg
+        if cfg.sampling_mode == "sgs":
+            b = self.sgs_sampler.sample(n)
+            return lib.bin_start[b] + (torch.rand(n, device=self.device)
+                * (self.sgs_bin_end[b] - lib.bin_start[b])).long()
         if cfg.sampling_mode == "start":
             clips = torch.randint(0, lib.num_clips, (n,), device=self.device)
             return lib.clip_start[clips]
@@ -285,7 +389,9 @@ class MultiClipMotionCommand(CommandTerm):
         # Episode bookkeeping for the envs being reset (terminal reward is already in reward_buf).
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         mask[env_ids] = True
-        if self.ep_len.sum() > 0 or hasattr(self._env, "reward_buf"):
+        if self.sgs_sampler is not None:
+            self._finalize_sgs(env_ids)
+        elif self.ep_len.sum() > 0 or hasattr(self._env, "reward_buf"):
             self._log_step_rewards(mask)
             self._finalize_episodes(env_ids)
         self.ep_len[env_ids] = 0
@@ -294,6 +400,10 @@ class MultiClipMotionCommand(CommandTerm):
         forced = self.forced_frame[env_ids]
         self.frame[env_ids] = torch.where(forced >= 0, forced, sampled)
         self.clip_end[env_ids] = False
+        if self.sgs_sampler is not None:
+            self.episode_start_bin[env_ids] = self.library.bin_of_frame(self.frame[env_ids])
+            # Deterministic evaluation overrides do not train the sampler.
+            self.sgs_active[env_ids] = forced < 0
 
         r = self.library.ref(self.frame[env_ids])
         root_pos = r.root_pos_w + self._env.scene.env_origins[env_ids]
@@ -334,7 +444,10 @@ class MultiClipMotionCommand(CommandTerm):
         # Clip end must be judged against the clip of the *current* frame (frame+1 may already be
         # the first frame of the next clip in the concatenated library).
         last = self.library.last_frame_of(self.frame)
-        if env_ids is None:
+        if self.sgs_sampler is not None:
+            if env_ids is None:
+                self.frame += (~self._env.reset_buf).long()
+        elif env_ids is None:
             # Per-step path: log the reward earned against the current target frame for the envs
             # that were NOT just reset (their terminal reward was logged in _resample_command).
             reset_buf = getattr(self._env, "reset_buf", None)
@@ -352,6 +465,7 @@ class MultiClipMotionCommand(CommandTerm):
     def reset_to_frame(self, env_ids: torch.Tensor, frame: torch.Tensor) -> None:
         """Deterministic reset to exact reference frames (no noise); used by evaluation."""
         self.ep_len[env_ids] = 0
+        self.sgs_active[env_ids] = False
         self.frame[env_ids] = frame
         self.clip_end[env_ids] = False
         r = self.library.ref(frame)
@@ -406,7 +520,15 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (0.0, 0.0)
-    sampling_mode: Literal["return", "uniform", "start"] = "return"
+    sampling_mode: Literal["return", "uniform", "start", "sgs"] = "return"
+    sgs_target: float = 0.66
+    sgs_kappa: float = 5.0
+    sgs_temperature: float = 2.0
+    sgs_eps: float = 1e-8
+    sgs_history: int = 100
+    sgs_eval_steps: int = 50
+    sgs_root_pos_threshold: float = 0.15
+    sgs_body_pos_threshold: float = 0.15
     # Return-based sampling (plan D14).
     uniform_ratio: float = 0.5
     hard_ratio: float = 0.4

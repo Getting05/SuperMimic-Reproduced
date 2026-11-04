@@ -79,7 +79,15 @@ class SuperMimicEnvCfgArgs:
     obs_noise: bool = True
     reset_noise: bool = True
     domain_randomization: bool = True
-    sampling_mode: str = "return"  # return | uniform | start
+    sampling_mode: str = "return"
+    sgs_target: float = 0.66
+    sgs_kappa: float = 5.0
+    sgs_temperature: float = 2.0
+    sgs_eps: float = 1e-8
+    sgs_history: int = 100
+    sgs_eval_steps: int = 50
+    sgs_root_pos_threshold: float = 0.15
+    sgs_body_pos_threshold: float = 0.15  # return | uniform | start | sgs
     replay_capacity: int = 1000
     record_transitions: bool = True
     seed: int | None = 0
@@ -91,7 +99,7 @@ class SuperMimicEnvCfgArgs:
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     robot: str = "g1"
-    p2_advanced_actuators: bool = True
+    p2_advanced_actuators: bool = False
     extra_command_kwargs: dict = field(default_factory=dict)
 
 
@@ -102,6 +110,8 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     else:
         robot_cfg, action_scale = get_g1_robot_cfg(), G1_ACTION_SCALE
         foot_geom_regex = FOOT_GEOM_REGEX
+    anchor_body = "waist_roll_link" if a.robot == "p2" else ANCHOR_BODY
+    tracked_bodies = tuple(anchor_body if name == ANCHOR_BODY else name for name in TRACKED_BODIES)
     # ---------------------------------------------------------------- observations
     noise = (lambda lo, hi: Unoise(n_min=lo, n_max=hi)) if a.obs_noise else (lambda lo, hi: None)
     policy_terms = {
@@ -153,9 +163,9 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     commands = {
         "motion": MultiClipMotionCommandCfg(
             npz_files=[str(f) for f in a.npz_files],
-            anchor_body_name=ANCHOR_BODY,
+            anchor_body_name=anchor_body,
             root_body_name=ROOT_BODY,
-            body_names=TRACKED_BODIES,
+            body_names=tracked_bodies,
             entity_name="robot",
             future_frames=a.future_frames,
             bin_frames=a.bin_frames,
@@ -163,6 +173,14 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             velocity_range=vel_range if a.reset_noise else {},
             joint_position_range=(-0.1, 0.1) if a.reset_noise else (0.0, 0.0),
             sampling_mode=a.sampling_mode,  # type: ignore[arg-type]
+            sgs_target=a.sgs_target,
+            sgs_kappa=a.sgs_kappa,
+            sgs_temperature=a.sgs_temperature,
+            sgs_eps=a.sgs_eps,
+            sgs_history=a.sgs_history,
+            sgs_eval_steps=a.sgs_eval_steps,
+            sgs_root_pos_threshold=a.sgs_root_pos_threshold,
+            sgs_body_pos_threshold=a.sgs_body_pos_threshold,
             compact_library=a.compact_library,
             robot_variant=a.robot,
             debug_vis=a.debug_vis,
@@ -177,7 +195,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             mode="startup",
             func=dr.body_com_offset,
             params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+                "asset_cfg": SceneEntityCfg("robot", body_names=(anchor_body,)),
                 "operation": "add",
                 "ranges": {0: (-0.025, 0.025), 1: (-0.05, 0.05), 2: (-0.05, 0.05)},
             },
@@ -230,9 +248,16 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
         "root_tilt": TerminationTermCfg(func=sm_term.bad_root_tilt, params={"command_name": "motion", "threshold": a.root_tilt_threshold}),
     }
 
+    if a.sampling_mode == "sgs":
+        terminations["sgs_horizon"] = TerminationTermCfg(
+            func=sm_term.sgs_horizon, params={"command_name": "motion"}, time_out=True,
+        )
+        if a.episode_length_s < a.sgs_eval_steps * 0.02:
+            raise ValueError("episode_length_s must allow the complete SGS horizon")
+
     recorders = {}
     if a.record_transitions:
-        recorders["replay"] = ReplayRecorderCfg(params={"capacity": a.replay_capacity, "foot_geom_regex": foot_geom_regex, "com_body_name": "torso_link"})
+        recorders["replay"] = ReplayRecorderCfg(params={"capacity": a.replay_capacity, "foot_geom_regex": foot_geom_regex, "com_body_name": anchor_body})
 
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(terrain=TerrainEntityCfg(terrain_type="plane"), num_envs=a.num_envs, entities={"robot": robot_cfg}),
@@ -243,8 +268,8 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
         rewards=rewards,
         terminations=terminations,
         recorders=recorders,
-        viewer=ViewerConfig(origin_type=ViewerConfig.OriginType.ASSET_BODY, entity_name="robot", body_name="torso_link", distance=2.8, fovy=55.0, elevation=-5.0, azimuth=120.0),
-        sim=QuietSimulationCfg(nconmax=35, njmax=250, mujoco=MujocoCfg(timestep=0.005, iterations=10, ls_iterations=20)),
+        viewer=ViewerConfig(origin_type=ViewerConfig.OriginType.ASSET_BODY, entity_name="robot", body_name=anchor_body, distance=2.8, fovy=55.0, elevation=-5.0, azimuth=120.0),
+        sim=QuietSimulationCfg(nconmax=128 if a.robot == "p2" else 35, njmax=768 if a.robot == "p2" else 250, mujoco=MujocoCfg(timestep=0.005, iterations=10, ls_iterations=20)),
         decimation=4,
         episode_length_s=a.episode_length_s,
         seed=a.seed,

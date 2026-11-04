@@ -24,7 +24,7 @@ class DataCfg:
 @dataclass
 class EnvCfg:
     robot: Literal["g1", "p2"] = "g1"
-    p2_advanced_actuators: bool = True
+    p2_advanced_actuators: bool = False
     num_envs: int = 4096
     episode_length_s: float = 10.0
     action_noise_std: float = 0.1
@@ -32,6 +32,14 @@ class EnvCfg:
     reset_noise: bool = True
     domain_randomization: bool = True
     sampling_mode: str = "return"
+    sgs_target: float = 0.66
+    sgs_kappa: float = 5.0
+    sgs_temperature: float = 2.0
+    sgs_eps: float = 1e-8
+    sgs_history: int = 100
+    sgs_eval_steps: int = 50
+    sgs_root_pos_threshold: float = 0.15
+    sgs_body_pos_threshold: float = 0.15
     replay_capacity: int = 1000
     future_frames: int = 10
     compact_library: bool = False
@@ -52,6 +60,13 @@ class ScheduleCfg:
 
 
 @dataclass
+class WandbCfg:
+    enabled: bool = False
+    project: str = "supermimic"
+    entity: str | None = None
+
+
+@dataclass
 class TrainConfig:
     run_name: str = "debug"
     log_root: Path = Path("logs")
@@ -65,4 +80,5 @@ class TrainConfig:
     critic: CriticCfg = field(default_factory=CriticCfg)
     policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
+    wandb: WandbCfg = field(default_factory=WandbCfg)
     resume: Path | None = None

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import time
+import os
+import uuid
+
+import torch.distributed as dist
 from dataclasses import asdict
 from pathlib import Path
 
@@ -15,7 +19,6 @@ from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.p2 import load_p2_model
 from supermimic.envs.mdp.motion_library import discover_npz
-from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy
@@ -67,6 +70,14 @@ class Trainer:
                 reset_noise=cfg.env.reset_noise,
                 domain_randomization=cfg.env.domain_randomization,
                 sampling_mode=cfg.env.sampling_mode,
+                sgs_target=cfg.env.sgs_target,
+                sgs_kappa=cfg.env.sgs_kappa,
+                sgs_temperature=cfg.env.sgs_temperature,
+                sgs_eps=cfg.env.sgs_eps,
+                sgs_history=cfg.env.sgs_history,
+                sgs_eval_steps=cfg.env.sgs_eval_steps,
+                sgs_root_pos_threshold=cfg.env.sgs_root_pos_threshold,
+                sgs_body_pos_threshold=cfg.env.sgs_body_pos_threshold,
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
                 anchor_obs=cfg.env.anchor_obs,
@@ -76,6 +87,11 @@ class Trainer:
         )
         env = self.env
         self.command = env.command_manager.get_term("motion")
+        if cfg.env.sampling_mode == "sgs" and self.world > 1:
+            signatures = [None] * self.world
+            dist.all_gather_object(signatures, self.command.sgs_signature)
+            if len(set(signatures)) != 1:
+                raise ValueError("SGS ranks must load the same complete MotionLibrary in the same order")
         self.lib = self.command.library
         self.recorder = env.recorder_manager.get_term("replay")
         self.buffer = self.recorder.buffer
@@ -83,7 +99,7 @@ class Trainer:
 
         fk_model = load_p2_model() if cfg.env.robot == "p2" else load_g1_model()
         fk = G1Kinematics(fk_model, device=self.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(fk, self.command.cfg.body_names, self.command.cfg.anchor_body_name, self.command.cfg.root_body_name, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
@@ -109,9 +125,22 @@ class Trainer:
     # ------------------------------------------------------------------ checkpoints
 
     def save(self, name: str = "ckpt_latest.pt") -> None:
+        sampler_files = None
+        if self.command.sgs_sampler is not None:
+            # Publish rank-local snapshots first, then atomically publish the manifest checkpoint.
+            generation = [uuid.uuid4().hex if self.is_main else None]
+            if self.world > 1:
+                dist.broadcast_object_list(generation, src=0)
+            sampler_files = [f"{name}.{generation[0]}.rank{rank}.sgs.pt" for rank in range(self.world)]
+            state = self.command.sgs_state_dict()
+            state["cpu_rng"] = torch.get_rng_state()
+            state["cuda_rng"] = torch.cuda.get_rng_state(self.device)
+            self._atomic_save(state, self.log_dir / sampler_files[self.rank])
+            if self.world > 1:
+                dist.barrier()
         if not self.is_main:
             return
-        torch.save(
+        self._atomic_save(
             {
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
@@ -124,26 +153,48 @@ class Trainer:
                 "bin_return": self.command.bin_return,
                 "bin_memory": self.command.bin_memory,
                 "config": asdict(self.cfg),
+                "sgs_rank_files": sampler_files,
             },
             self.log_dir / name,
         )
+
+    @staticmethod
+    def _atomic_save(state, path):
+        temporary = path.with_name(path.name + ".tmp")
+        torch.save(state, temporary)
+        os.replace(temporary, path)
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
         if ck["config"]["env"].get("robot", "g1") != self.cfg.env.robot:
             raise ValueError("Checkpoint robot does not match the training robot")
-        if self.cfg.env.robot == "p2":
+        warm_start_sgs = self.command.sgs_sampler is not None and ck["config"]["env"].get("sampling_mode", "return") != "sgs"
+        if self.cfg.env.robot == "p2" and not warm_start_sgs:
             previous_mode = ck["config"]["env"].get("p2_advanced_actuators")
             if previous_mode is None or previous_mode != self.cfg.env.p2_advanced_actuators:
                 raise ValueError("P2 resume requires matching actuator dynamics and PD gains")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
+        if warm_start_sgs:
+            print("[INFO] SGS initialized model weights from legacy checkpoint; fresh optimizer and sampler")
+            return
+        if self.command.sgs_sampler is not None:
+            files = ck.get("sgs_rank_files")
+            if files is None or len(files) != self.world:
+                raise ValueError("SGS resume requires matching world size and every rank snapshot")
+            state = torch.load(Path(path).parent / files[self.rank], map_location="cpu", weights_only=False)
+            self.command.load_sgs_state_dict(state)
+            torch.set_rng_state(state["cpu_rng"])
+            torch.cuda.set_rng_state(state["cuda_rng"], self.device)
+        elif ck["config"]["env"].get("sampling_mode") == "sgs":
+            raise ValueError("Resume an SGS checkpoint with sampling_mode=sgs")
         self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
         self.policy_trainer.opt.load_state_dict(ck["policy_opt"])
         self.policy_trainer.critic_opt.load_state_dict(ck["critic_opt"])
-        self.command.bin_return.copy_(ck["bin_return"])
-        self.command.bin_memory.copy_(ck["bin_memory"])
+        if self.command.sgs_sampler is None:
+            self.command.bin_return.copy_(ck["bin_return"])
+            self.command.bin_memory.copy_(ck["bin_memory"])
         self.iteration = ck["iteration"]
         self.start_iteration = self.iteration
         self.num_updates = ck["num_updates"]
@@ -156,6 +207,21 @@ class Trainer:
         return self.policy(obs["policy"], obs["goal"])
 
     def run(self) -> None:
+        self.wandb_run = None
+        try:
+            if self.is_main and self.cfg.wandb.enabled:
+                import wandb
+                self.wandb_run = wandb.init(project=self.cfg.wandb.project, entity=self.cfg.wandb.entity,
+                                           name=self.cfg.run_name, dir=str(self.log_dir),
+                                           config=json.loads(json.dumps(asdict(self.cfg), default=str)))
+            self._run()
+        finally:
+            if self.writer is not None:
+                self.writer.close()
+            if self.wandb_run is not None:
+                self.wandb_run.finish()
+
+    def _run(self) -> None:
         cfg = self.cfg
         sch = cfg.schedule
         env = self.env
@@ -225,35 +291,49 @@ class Trainer:
                     n_finished = int(round(cnt))
                 else:
                     n_finished = len(finished_returns)
+                metrics = {}
                 if not self.is_main:
                     agg, agg_n = {}, 0
                     finished_returns, finished_lens = [], []
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
                     for k, v in agg.items():
-                        self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
+                        metrics[k] = v / (agg_n if k != "lr" else 1)
                 if not self.is_main:
                     tr = float("nan")
                 elif finished_returns:
                     tr = sum(finished_returns) / len(finished_returns)
-                    self.writer.add_scalar("train/episode_norm_return", tr, it)
-                    self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
+                    metrics["train/episode_norm_return"] = tr
+                    metrics["train/episode_len"] = sum(finished_lens) / max(len(finished_lens), 1)
                 else:
                     tr = float("nan")
                 with torch.no_grad():
                     if self.is_main and self.buffer.size > 2048:
                         err = self.wm_trainer.online_error(self.buffer, n=1024, k=8)
-                        self.writer.add_scalar("wm/online_nse_1step", float(err[0]), it)
-                        self.writer.add_scalar("wm/online_nse_8step", float(err[-1]), it)
+                        metrics["wm/online_nse_1step"] = float(err[0])
+                        metrics["wm/online_nse_8step"] = float(err[-1])
                     else:
                         err = None
                 if self.is_main:
                     for k, v in timers.items():
-                        self.writer.add_scalar(f"time/{k}_s_per_iter", v / sch.log_interval, it)
-                    self.writer.add_scalar("time/hours", elapsed / 3600, it)
-                    self.writer.add_scalar("time/updates", self.num_updates, it)
-                    self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
-                    self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
+                        metrics[f"time/{k}_s_per_iter"] = v / sch.log_interval
+                    metrics["time/hours"] = elapsed / 3600
+                    metrics["time/updates"] = self.num_updates
+                    metrics["sampler/entropy"] = float(self.command.metrics["sampling_entropy"][0])
+                    metrics["sampler/bin_return_mean"] = float(self.command.bin_return.mean())
+                    if self.command.sgs_sampler is not None:
+                        sgs, rates, clip_rates = self.command.sgs_logs()
+                        metrics.update({name: float(value) for name, value in sgs.items()})
+                        self.writer.add_histogram("sgs/success_rate_histogram", rates, it)
+                        self.writer.add_histogram("sgs/clip_success_rate_histogram", clip_rates, it)
+                        if self.wandb_run is not None:
+                            import wandb
+                            self.wandb_run.log({"sgs/success_rate_histogram": wandb.Histogram(rates.cpu().numpy()),
+                                                "sgs/clip_success_rate_histogram": wandb.Histogram(clip_rates.cpu().numpy())}, step=it, commit=False)
+                    for name, value in metrics.items():
+                        self.writer.add_scalar(name, value, it)
+                    if self.wandb_run is not None:
+                        self.wandb_run.log(metrics, step=it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (

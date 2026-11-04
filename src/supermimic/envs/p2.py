@@ -59,7 +59,7 @@ _GROUPS = (
 )
 
 
-def make_p2_robot(advanced_actuators: bool = True):
+def make_p2_robot(advanced_actuators: bool = False):
     from mjlab.actuator import BuiltinPositionActuatorCfg
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
