@@ -213,6 +213,8 @@ class Trainer:
 
     @torch.no_grad()
     def act(self, obs) -> torch.Tensor:
+        self.policy.obs_norm.update(obs["policy"].reshape(-1,self.cfg.policy.history,99)[:,-1])
+        self.policy.goal_norm.update(obs["goal"])
         return self.policy(obs["policy"], obs["goal"])
 
     def run(self) -> None:

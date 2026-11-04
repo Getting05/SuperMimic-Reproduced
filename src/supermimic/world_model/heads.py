@@ -144,6 +144,20 @@ class AnalyticHeads:
         alive=(1-torch.sigmoid((errors[...,0]-.25)/tz))*(1-torch.sigmoid((errors[...,1]-.8)/tt))
         return 1-alive
 
+    def critic_features(self,s,ref,xi,spec):
+        from supermimic.envs.mdp.rewards import reanchor_reference
+        from supermimic.kinematics.rotations import yaw_quat,rot6d_from_quat,quat_inv,quat_mul
+        body=self.robot_bodies(s)
+        rp,_=reanchor_reference(ref.body_pos_w,ref.body_quat_w,ref.root_pos_w,
+            ref.root_quat_w,s[...,:3],s[...,3:7])
+        h=yaw_quat(s[...,3:7])
+        eb=quat_apply_inverse(h[...,None,:].expand(*rp.shape[:-1],4),rp-body["pos"]).flatten(-2)
+        # Reference joint positions are supplied by the caller.
+        return torch.cat((spec.canonical(s),eb,
+            quat_apply_inverse(h,ref.root_pos_w-s[...,:3]),
+            rot6d_from_quat(quat_mul(quat_inv(s[...,3:7]),ref.root_quat_w)),
+            spec.normalize_xi(xi)),-1)
+
     @staticmethod
     def root_error_features(s: torch.Tensor, ref: ReferenceFrame) -> torch.Tensor:
         """Critic-only privileged drift features (plan D10): root position error in the reference

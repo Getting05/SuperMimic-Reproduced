@@ -75,3 +75,7 @@ Collector-only Gaussian execution noise, clamp [-20,20], paired negative observa
 ## Stage 6
 
 Time-major transition ring and reset-safe recorder implemented. 24 targeted tests passed in 9.13s. Real P2 hook test forced 3 timeouts in 6 steps, compared stored s1 to pre-reset snapshots and asserted exactly 6 full rows: RESET_HOOK_TIME_MAJOR_OK 6 3. History uses per-row xi/f and ep_step clipping. Full SGS training regression remains final validation.
+
+## Stage 7
+
+ELU policy/critic, RunningNorm with distributed batch moments, normalized 99D per-frame policy input, 914D critic with body/joint/root errors implemented. 26 targeted tests passed in 9.28s after fixing a decoder syntax error caught at collection. P2 simulator + WM/policy/critic optimizer smoke passed: NORM_CRITIC_TRAIN_OK. Full distributed smoke remains final validation.

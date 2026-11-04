@@ -19,7 +19,8 @@ class MLP(nn.Module):
             nn.init.zeros_(last.weight)
             nn.init.zeros_(last.bias)
         elif last_gain is not None:
-            nn.init.orthogonal_(last.weight, gain=last_gain)
+            with torch.no_grad():
+                last.weight.mul_(last_gain)
             nn.init.zeros_(last.bias)
         layers.append(last)
         self.net = nn.Sequential(*layers)

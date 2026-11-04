@@ -81,9 +81,9 @@ class StateSpec:
         q = quat_normalize(q)
         hq = heading_quat(q)
         q_local = quat_canonical(quat_mul(quat_apply_inverse_quat(hq), q))
-        v_h = quat_apply_inverse(hq, v)
+        v_h = quat_apply_inverse(q, v)
         feat = torch.cat([p[..., 2:3], rot6d_from_quat(q_local), v_h, w, qj, qd], dim=-1)
-        return feat / self.in_scale
+        return feat
 
     def normalize_xi(self, xi: torch.Tensor) -> torch.Tensor:
         return (xi - self.xi_offset) / self.xi_scale

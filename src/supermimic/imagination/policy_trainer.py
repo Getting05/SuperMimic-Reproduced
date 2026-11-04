@@ -52,10 +52,17 @@ class PolicyTrainer:
         for g in self.critic_opt.param_groups:
             g["lr"] = lr
 
-    def _critic_inputs(self, ro: ImagRollout):
-        H1, n, _ = ro.states.shape
-        feat = self.wm.spec.canonical(ro.states.reshape(H1 * n, -1)).reshape(H1, n, -1)
-        return feat, ro.goals, ro.e_root
+    def _critic_inputs(self,ro,xi):
+        from supermimic.world_model.wm_trainer import reference_at
+        H1,n,_=ro.states.shape
+        state=ro.states.flatten(0,1)
+        frame=ro.frames.flatten()
+        x=self.wm.heads.critic_features(state,reference_at(self.lib,frame),
+            xi[None].expand(H1,n,-1).reshape(-1,33),self.wm.spec)
+        # Insert the privileged joint-position error after invariant71.
+        dq=self.lib.ref(frame).joint_pos-state[:,13:42]
+        feat=torch.cat((x[:,:71],dq,x[:,71:]),-1).reshape(H1,n,184)
+        return feat,ro.goals,ro.e_root
 
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
         cfg = self.cfg
@@ -66,9 +73,10 @@ class PolicyTrainer:
         self.wm.requires_grad_(False)
         self.critic.requires_grad_(False)
         ro = imagine(self.wm, self.policy, self.lib, start, cfg.horizon, cfg.future_frames, obs_noise=cfg.obs_noise, step_fn=self.step_fn, anchor_obs=cfg.anchor_obs)
-        feat, goals, e_root = self._critic_inputs(ro)
+        feat, goals, e_root = self._critic_inputs(ro,start.xi)
+        self.critic.norm.update(torch.cat((feat.detach(),goals.detach()),-1))
         if cfg.use_critic:
-            v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
+            v_H = self.critic(feat[-1], goals[-1])
         else:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
@@ -78,7 +86,8 @@ class PolicyTrainer:
         allreduce_grads(self.policy)
         gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
         torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
-        self.opt.step()
+        if torch.isfinite(gn):
+            self.opt.step()
         self.wm.requires_grad_(True)
         self.critic.requires_grad_(True)
 
@@ -100,7 +109,7 @@ class PolicyTrainer:
                 feat_d, goals_d, e_root_d = feat.detach(), goals.detach(), e_root.detach()
                 H1, n, _ = feat_d.shape
                 xi_rep = xi_norm[None].expand(H1, n, -1)
-                values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1), xi_rep.reshape(H1 * n, -1), e_root_d.reshape(H1 * n, -1)).reshape(H1, n)
+                values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1)).reshape(H1, n)
                 targets = gae_targets(ro.rewards.detach(), ro.dhat[1:].detach(), values, cfg.gamma, cfg.gae_lambda)  # (H, n)
                 X_feat = feat_d[:-1].reshape(-1, feat_d.shape[-1])
                 X_goal = goals_d[:-1].reshape(-1, goals_d.shape[-1])
@@ -114,7 +123,7 @@ class PolicyTrainer:
                 perm = torch.randperm(N, device=Y.device)
                 for i in range(cfg.critic_minibatches):
                     idx = perm[i * mb : (i + 1) * mb]
-                    pred = self.critic(X_feat[idx], X_goal[idx], X_xi[idx], X_er[idx])
+                    pred = self.critic(X_feat[idx], X_goal[idx])
                     closs = torch.nn.functional.mse_loss(pred, Y[idx])
                     self.critic_opt.zero_grad(set_to_none=True)
                     closs.backward()
