@@ -17,9 +17,9 @@ from supermimic.envs.mdp.rewards import TrackingRewardCfg, tracking_reward_terms
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.kinematics.rotations import projected_gravity, quat_apply_inverse
 
-OBS_DIM = 93
+OBS_DIM = 99
 # Term layout of the ``policy`` observation group (order matters: term-major history).
-OBS_TERMS = (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29))
+OBS_TERMS = (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29), ("relative_orientation", 6))
 
 
 def split_state(s: torch.Tensor):
@@ -28,7 +28,7 @@ def split_state(s: torch.Tensor):
 
 
 def analytic_observation(
-    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor
+    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor, ref_quat: torch.Tensor
 ) -> torch.Tensor:
     """Noise-free 93-d proprioceptive observation (paper Table A.1) from state + context.
 
@@ -36,7 +36,9 @@ def analytic_observation(
     """
     _, root_quat, q, _, ang_b, qd = split_state(s)
     bias = xi[..., 1:30]
-    return torch.cat([q + bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action], dim=-1)
+    from supermimic.kinematics.rotations import quat_inv, quat_mul, rot6d_from_quat
+    rel = rot6d_from_quat(quat_mul(quat_inv(root_quat),ref_quat))
+    return torch.cat([q - bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action, rel], dim=-1)
 
 
 def anchor_relative_obs(robot_anchor_pos: torch.Tensor, robot_anchor_quat: torch.Tensor, ref_anchor_pos: torch.Tensor, ref_anchor_quat: torch.Tensor) -> torch.Tensor:
@@ -56,13 +58,7 @@ ANCHOR_OBS_DIM = 9
 
 def flatten_history_term_major(hist: torch.Tensor) -> torch.Tensor:
     """(H, N, 93) oldest→newest  ->  (N, 930) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
-    H, N, _ = hist.shape
-    chunks = []
-    start = 0
-    for _, d in OBS_TERMS:
-        chunks.append(hist[:, :, start : start + d].permute(1, 0, 2).reshape(N, H * d))
-        start += d
-    return torch.cat(chunks, dim=-1)
+    return hist.permute(1,0,2).flatten(1)
 
 
 @dataclass

@@ -59,3 +59,7 @@ Stages 3–10 in VIBED_PARITY_SPEC.md remain open.
 ## Stage 2 evidence
 
 16 targeted tests passed in 8.74s. A real P2 CUDA integration checked StateIO read/write, reference native/model roundtrip, FK body positions versus simulator, and 12 physics steps: STATE71_SIM_REFERENCE_FK_OK, shape (2,71). Contact Solver and physical asset guards passed. The existing WM integration mathematics remains pending replacement in stage 8.
+
+## Stage 3
+
+99D current observation, time-major 990D history, 73D future frames and 730D goal implemented. 18 targeted tests passed in 8.61s. Real P2 environment reset history repetition and four FSQ policy physics steps passed: GOAL_OBS_POLICY_SIM_OK (2,990)/(2,730). Reward time alignment and paired action bias remain stages 4/5.

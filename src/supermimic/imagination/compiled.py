@@ -42,7 +42,7 @@ class ImagStep:
         r = terms["total"]
         term_vec = torch.stack([terms[k] for k in REWARD_TERM_NAMES], dim=0)  # (8, n)
         logits = self.wm.termination_logits(s_next, ref)
-        obs_clean = analytic_observation(s_next, a, xi, self.q0)
+        obs_clean = analytic_observation(s_next, a, xi, self.q0, ref_root_quat)
         ai = self.wm.heads.anchor_index
         anchor_pose = torch.cat([bodies["pos"][..., ai, :], bodies["quat"][..., ai, :]], dim=-1)  # (n, 7)
         return s_next, r, term_vec, logits, obs_clean, anchor_pose

@@ -10,7 +10,7 @@ import torch.nn as nn
 from supermimic.world_model.dynamics import MLP
 from supermimic.world_model.heads import OBS_TERMS
 
-GOAL_DIM = 680
+GOAL_DIM = 730
 LATENT_DIM = 32
 ACT_DIM = 29
 FSQ_DIM = 40
@@ -37,17 +37,10 @@ class CriticCfg:
 
 
 def _obs_scale_vector(cfg: PolicyCfg) -> torch.Tensor:
-    parts = []
-    for (name, d), s in zip(OBS_TERMS, cfg.obs_term_scale):
-        parts.append(torch.full((cfg.history * d,), 1.0 / s))
-    return torch.cat(parts)  # term-major layout matches the flattened history
-
+    return torch.ones(cfg.history * 99)
 
 def _goal_scale_vector(cfg: PolicyCfg, goal_dim: int) -> torch.Tensor:
-    sizes = (29, 29, 3, 3, 3, 1)
-    per_frame = torch.cat([torch.full((n,), 1.0 / s) for n, s in zip(sizes, cfg.goal_term_scale)])
-    k, extra = divmod(goal_dim, 68)
-    return torch.cat([per_frame.repeat(k), torch.ones(extra)])
+    return torch.ones(goal_dim)
 
 
 class MotionEncoder(nn.Module):
@@ -68,7 +61,7 @@ class MotionEncoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, cfg: PolicyCfg, obs_dim: int = 930):
+    def __init__(self, cfg: PolicyCfg, obs_dim: int = 990):
         super().__init__()
         self.mlp = MLP((FSQ_DIM if cfg.fsq else cfg.latent_dim) + obs_dim, cfg.decoder_hidden, ACT_DIM, last_gain=cfg.decoder_last_gain)
         self.register_buffer("scale", _obs_scale_vector(cfg))

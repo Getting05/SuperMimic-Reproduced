@@ -30,7 +30,7 @@ import torch
 
 from supermimic.kinematics.rotations import projected_gravity, quat_apply_inverse, yaw_quat
 
-GOAL_FEAT_DIM = 68
+GOAL_FEAT_DIM = 73
 REF_DIM = 71
 
 
@@ -259,14 +259,22 @@ class MotionLibrary:
         return self.clip_last[self.frame_clip[frame]]
 
     def goal_window(self, frame: torch.Tensor, k: int) -> torch.Tensor:
-        """(N, k*68) goal features of frames frame..frame+k-1, clamped at the clip end."""
-        last = self.last_frame_of(frame)
-        offs = torch.arange(k, device=self.device)
-        idx = torch.minimum(frame[:, None] + offs[None, :], last[:, None])  # (N,k)
-        if not self.compact:
-            return self._gather(self.goal_feat, idx).reshape(frame.shape[0], k * GOAL_FEAT_DIM)
-        feat = goal_features(self.ref(idx.reshape(-1)), self.default_joint_pos)
-        return feat.reshape(frame.shape[0], k * GOAL_FEAT_DIM)
+        """Future f+1..f+k, relative to current reference heading; pose hold beyond end."""
+        from supermimic.kinematics.rotations import quat_inv, quat_mul, rot6d_from_quat
+        current = self.ref(frame)
+        raw = frame[:, None] + torch.arange(1, k+1, device=self.device)
+        last = self.last_frame_of(frame)[:, None]
+        idx = torch.minimum(raw, last)
+        r = self.ref(idx)
+        h = yaw_quat(current.root_quat_w)[:, None, :].expand(-1,k,-1)
+        valid = (raw <= last)[...,None]
+        feat = torch.cat((
+            quat_apply_inverse(h,r.root_pos_w-current.root_pos_w[:,None]),
+            rot6d_from_quat(quat_mul(quat_inv(h),r.root_quat_w)),
+            quat_apply_inverse(r.root_quat_w,r.root_lin_vel_w)*valid,
+            quat_apply_inverse(r.root_quat_w,r.root_ang_vel_w)*valid,
+            r.joint_pos, .1*r.joint_vel*valid),-1)
+        return feat.reshape(frame.shape[0],k*73)
 
     def ref_qpos_qvel(self, frame: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """MuJoCo-layout reference state: qpos (N,36) and qvel (N,35; root ang vel in body frame)."""

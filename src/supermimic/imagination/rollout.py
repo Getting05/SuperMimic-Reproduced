@@ -15,7 +15,7 @@ from supermimic.world_model.wm_trainer import reference_at
 from supermimic.world_model.world_model import WorldModel
 
 # Paper Table A.1 sensor noise (uniform half-widths) in the 93-d observation order.
-OBS_NOISE_HALF = torch.tensor([0.01] * 29 + [0.5] * 29 + [0.2] * 3 + [0.05] * 3 + [0.0] * 29)
+OBS_NOISE_HALF = torch.tensor([0.01] * 29 + [0.5] * 29 + [0.2] * 3 + [0.05] * 3 + [0.0] * 29 + [0.05] * 6)
 ANCHOR_NOISE_HALF = torch.tensor([0.25] * 3 + [0.05] * 6)
 
 
@@ -66,7 +66,7 @@ def imagine(
         return torch.cat([g, rel], dim=-1)
 
     # Initial observation history from the logged states/actions (noise re-sampled per frame).
-    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i], start.xi, q0)) for i in range(start.hist_states.shape[0])]
+    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i], start.xi, q0, lib.ref((start.frame - (start.hist_states.shape[0]-1-i)).clamp_min(lib.clip_start[lib.frame_clip[start.frame]])).root_quat_w)) for i in range(start.hist_states.shape[0])]
     s = start.state
     frame = start.frame.clone()
     a_prev = start.prev_action

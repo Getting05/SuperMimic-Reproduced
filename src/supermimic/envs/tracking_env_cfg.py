@@ -115,13 +115,8 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     tracked_bodies = tuple(anchor_body if name == ANCHOR_BODY else name for name in TRACKED_BODIES)
     # ---------------------------------------------------------------- observations
     noise = (lambda lo, hi: Unoise(n_min=lo, n_max=hi)) if a.obs_noise else (lambda lo, hi: None)
-    policy_terms = {
-        "joint_pos": ObservationTermCfg(func=base_mdp.joint_pos_rel, params={"biased": True}, noise=noise(-0.01, 0.01)),
-        "joint_vel": ObservationTermCfg(func=base_mdp.joint_vel_rel, noise=noise(-0.5, 0.5)),
-        "base_ang_vel": ObservationTermCfg(func=base_mdp.base_ang_vel, noise=noise(-0.2, 0.2)),
-        "projected_gravity": ObservationTermCfg(func=base_mdp.projected_gravity, noise=noise(-0.05, 0.05)),
-        "actions": ObservationTermCfg(func=base_mdp.last_action),
-    }
+    policy_terms = {"frame": ObservationTermCfg(
+        func=sm_obs.policy_frame_noisy if a.obs_noise else sm_obs.policy_frame)}
     observations = {
         "policy": ObservationGroupCfg(
             terms=policy_terms,
