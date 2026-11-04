@@ -204,7 +204,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             params={"asset_cfg": SceneEntityCfg("robot"), "bias_range": (-0.01, 0.01)},
         )
         events["foot_friction"] = EventTermCfg(
-            mode="reset",
+            mode="startup",
             func=dr.geom_friction,
             params={
                 "asset_cfg": SceneEntityCfg("robot", geom_names=foot_geom_regex),

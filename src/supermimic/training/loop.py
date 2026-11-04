@@ -29,6 +29,11 @@ from supermimic.world_model.wm_trainer import WorldModelTrainer
 from supermimic.world_model.world_model import WorldModel
 
 
+def execution_action(action, sigma):
+    return (action + sigma*torch.randn_like(action)).clamp(-20,20)
+
+
+
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
@@ -242,6 +247,7 @@ class Trainer:
             # ---------------- (1) collect one vectorised env step
             t0 = time.perf_counter()
             action = self.act(obs)
+            action = execution_action(action, cfg.env.action_noise_std)
             obs, rew, term, tout, extras = env.step(action)
             self.ep_reward_sum += rew
             self.ep_len += 1

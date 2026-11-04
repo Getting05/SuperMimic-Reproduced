@@ -32,15 +32,17 @@ class NoisyJointPositionAction(JointPositionAction):
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions
-        if self.noise_std > 0:
-            self._executed_raw = self._raw_actions + self.noise_std * torch.randn_like(self._raw_actions)
-        else:
-            self._executed_raw = self._raw_actions.clone()
+        self._executed_raw = self._raw_actions.clone()
         self._processed_actions = self._executed_raw * self._scale + self._offset
         if self.cfg.clip is not None:
             self._processed_actions = torch.clamp(
                 self._processed_actions, min=self._clip[:, :, 0], max=self._clip[:, :, 1]
             )
+
+    def apply_actions(self):
+        bias=self._entity.data.encoder_bias[:, self._target_ids]
+        self._entity.set_joint_position_target(self._processed_actions+bias,
+                                              joint_ids=self._target_ids)
 
     def reset(self, env_ids=None) -> None:
         super().reset(env_ids)
