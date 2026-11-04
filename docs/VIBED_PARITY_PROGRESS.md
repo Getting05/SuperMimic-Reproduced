@@ -71,3 +71,7 @@ Pelvis anchor, post-integration analytic FK rewards and f+1 reference, analytic 
 ## Stage 5
 
 Collector-only Gaussian execution noise, clamp [-20,20], paired negative observation bias/positive target bias, friction startup implemented. 22 tests passed in 9.20s. Real P2 integration verified identical collector, ActionManager and action-term executed actions: EXECUTED_ACTION_SIM_OK.
+
+## Stage 6
+
+Time-major transition ring and reset-safe recorder implemented. 24 targeted tests passed in 9.13s. Real P2 hook test forced 3 timeouts in 6 steps, compared stored s1 to pre-reset snapshots and asserted exactly 6 full rows: RESET_HOOK_TIME_MAJOR_OK 6 3. History uses per-row xi/f and ep_step clipping. Full SGS training regression remains final validation.

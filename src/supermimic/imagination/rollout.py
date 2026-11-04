@@ -66,7 +66,10 @@ def imagine(
         return torch.cat([g, rel], dim=-1)
 
     # Initial observation history from the logged states/actions (noise re-sampled per frame).
-    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i], start.xi, q0, lib.ref((start.frame - (start.hist_states.shape[0]-1-i)).clamp_min(lib.clip_start[lib.frame_clip[start.frame]])).root_quat_w)) for i in range(start.hist_states.shape[0])]
+    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i],
+        start.hist_xi[i], q0, lib.ref(start.hist_frames[i]).root_quat_w))
+        for i in range(start.hist_states.shape[0])]
+
     s = start.state
     frame = start.frame.clone()
     a_prev = start.prev_action

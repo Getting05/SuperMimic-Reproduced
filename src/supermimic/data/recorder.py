@@ -36,87 +36,55 @@ class ReplayRecorder(RecorderTerm):
         self.action_name = p.get("action_name", "joint_pos")
         n = env.num_envs
         self.buffer = ReplayBuffer(n, int(p["capacity"]), STATE_DIM, 29, XI_DIM, env.device)
-        self.prev_s = torch.zeros(n, STATE_DIM, device=env.device)
-        self.prev_xi = torch.zeros(n, XI_DIM, device=env.device)
-        self.prev_frame = torch.zeros(n, dtype=torch.long, device=env.device)
-        self.prev_clip = torch.zeros(n, dtype=torch.long, device=env.device)
-        self.ep_start = torch.ones(n, dtype=torch.bool, device=env.device)
+        self.prev_s = torch.zeros(n,STATE_DIM,device=env.device)
+        self.prev_xi = torch.zeros(n,XI_DIM,device=env.device)
+        self.prev_frame = torch.zeros(n,dtype=torch.long,device=env.device)
+        self.prev_action = torch.zeros(n,29,device=env.device)
+        self.ep_step = torch.zeros(n,dtype=torch.int32,device=env.device)
+        self.pending = {}
         self.enabled = True
 
-    # lazy handles (managers are built after the recorder in load_managers order? no: recorder is last)
     @property
     def command(self):
         return self._env.command_manager.get_term(self.command_name)
 
-    @property
-    def action_term(self):
-        return self._env.action_manager.get_term(self.action_name)
+    def _remember(self,ids):
+        self.prev_s[ids]=self.state_io.read()[ids]
+        self.prev_xi[ids]=self.ctx.read()[ids]
+        self.prev_frame[ids]=self.command.frame[ids]
 
-    def _remember(self, ids: torch.Tensor) -> None:
-        cmd = self.command
-        self.prev_s[ids] = self.state_io.read()[ids]
-        self.prev_xi[ids] = self.ctx.read()[ids]
-        self.prev_frame[ids] = cmd.frame[ids]
-        self.prev_clip[ids] = cmd.library.frame_clip[cmd.frame[ids]]
-
-    def record_post_reset(self, env_ids: torch.Tensor) -> None:
-        if not self.enabled:
-            return
+    def record_post_reset(self,env_ids):
+        if not self.enabled:return
         self._remember(env_ids)
-        self.ep_start[env_ids] = True
+        self.prev_action[env_ids]=0
+        self.ep_step[env_ids]=0
 
-    def _write_rows(self, ids: torch.Tensor, done_next: torch.Tensor) -> None:
-        env = self._env
-        self.buffer.add(
-            ids,
-            s=self.prev_s[ids],
-            a=env.action_manager.action[ids],
-            a_exec=self.action_term.executed_raw[ids],
-            xi=self.prev_xi[ids],
-            r=env.reward_buf[ids],
-            done=done_next,
-            frame=self.prev_frame[ids],
-            clip=self.prev_clip[ids],
-            terminal=torch.zeros_like(done_next, dtype=torch.bool),
-            ep_start=self.ep_start[ids],
-        )
-        self.ep_start[ids] = False
+    def record_pre_reset(self,env_ids):
+        if not self.enabled or not env_ids.numel():return
+        env=self._env
+        # Snapshot original episode fields before reset hooks overwrite them.
+        for name,value in dict(s=self.prev_s,s1=self.state_io.read(),
+            a=env.action_manager.action,a_prev=self.prev_action,xi=self.prev_xi,
+            r=env.reward_buf,f=self.prev_frame,ep_step=self.ep_step,done=env.reset_buf).items():
+            if name not in self.pending:self.pending[name]=value.clone()
+            self.pending[name][env_ids]=value[env_ids]
 
-    def record_pre_reset(self, env_ids: torch.Tensor) -> None:
-        if not self.enabled or env_ids.numel() == 0:
-            return
-        env = self._env
-        terminated = env.reset_terminated[env_ids].float()
-        self._write_rows(env_ids, terminated)
-        # Terminal row: the state reached by the last action (no transition out of it).
-        cmd = self.command
-        s_next = self.state_io.read()[env_ids]
-        zeros_a = torch.zeros(env_ids.numel(), 29, device=env.device)
-        self.buffer.add(
-            env_ids,
-            s=s_next,
-            a=zeros_a,
-            a_exec=zeros_a,
-            xi=self.prev_xi[env_ids],
-            r=torch.zeros(env_ids.numel(), device=env.device),
-            done=terminated,
-            frame=cmd.frame[env_ids],
-            clip=cmd.library.frame_clip[cmd.frame[env_ids]],
-            terminal=torch.ones(env_ids.numel(), dtype=torch.bool, device=env.device),
-            ep_start=torch.zeros(env_ids.numel(), dtype=torch.bool, device=env.device),
-        )
-        self.buffer.end_episode(env_ids)
-
-    def record_post_step(self) -> None:
-        if not self.enabled:
-            return
-        env = self._env
-        mask = ~env.reset_buf
-        ids = mask.nonzero().squeeze(-1)
-        if ids.numel() == 0:
-            return
-        self._write_rows(ids, torch.zeros(ids.numel(), device=env.device))
-        self._remember(ids)
+    def record_post_step(self):
+        if not self.enabled:return
+        env=self._env
+        data=dict(s=self.prev_s.clone(),s1=self.state_io.read(),
+            a=env.action_manager.action.clone(),a_prev=self.prev_action.clone(),
+            xi=self.prev_xi.clone(),r=env.reward_buf.clone(),f=self.prev_frame.clone(),
+            ep_step=self.ep_step.clone(),done=env.reset_buf.clone())
+        ids=env.reset_buf.nonzero().flatten()
+        for name,value in self.pending.items():
+            data[name][ids]=value[ids]
+        self.buffer.add(**data)
+        self.pending.clear()
+        active=(~env.reset_buf).nonzero().flatten()
+        self.ep_step[active]+=1
+        self.prev_action[active]=data["a"][active]
+        self._remember(active)
 
 
 @dataclass
