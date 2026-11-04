@@ -119,7 +119,16 @@ class MotionLibrary:
             pack = torch.load(npz_files[0], map_location="cpu", weights_only=False)
             if p2_joint_names is not None and tuple(pack.get("joint_names", ())) != p2_joint_names:
                 raise ValueError("Packed P2 motions must use the 29 P2 joints in V3 MJCF order")
-            self._ref = pack["ref"].to(device=self.storage_device, dtype=store_dtype)
+            packed_ref = pack["ref"]
+            # Packed motion archives have a distinct, documented on-disk layout.
+            # This is data ingestion, not checkpoint compatibility.
+            layout = pack.get("state_layout", "p_quat_q_v_w_world_qd")
+            if layout == "p_quat_q_v_w_world_qd":
+                packed_ref = torch.cat((packed_ref[..., :7], packed_ref[..., 36:42],
+                                        packed_ref[..., 7:36], packed_ref[..., 42:71]), -1)
+            elif layout != "vibed71":
+                raise ValueError(f"Unknown motion state_layout: {layout}")
+            self._ref = packed_ref.to(device=self.storage_device, dtype=store_dtype)
             clips = [ClipInfo(n, int(st), int(ln)) for n, st, ln in zip(pack["names"], pack["starts"], pack["lengths"])]
             start = int(self._ref.shape[0])
             ref_chunks = None
@@ -134,7 +143,7 @@ class MotionLibrary:
                 n = int(d["joint_pos"].shape[0])
                 bp, bq, blv, bav = d["body_pos_w"], d["body_quat_w"], d["body_lin_vel_w"], d["body_ang_vel_w"]
                 ref = np.concatenate(
-                    [bp[:, root_idx], bq[:, root_idx], d["joint_pos"], blv[:, root_idx], bav[:, root_idx], d["joint_vel"]], axis=1
+                    [bp[:, root_idx], bq[:, root_idx], blv[:, root_idx], bav[:, root_idx], d["joint_pos"], d["joint_vel"]], axis=1
                 ).astype(np.float32)
                 ref_chunks.append(ref)
                 if not compact:
@@ -192,7 +201,7 @@ class MotionLibrary:
 
     @staticmethod
     def _split(r: torch.Tensor) -> RefState:
-        return RefState(r[..., 0:3], r[..., 3:7], r[..., 7:36], r[..., 36:39], r[..., 39:42], r[..., 42:71])
+        return RefState(r[..., 0:3], r[..., 3:7], r[..., 13:42], r[..., 7:10], r[..., 10:13], r[..., 42:71])
 
     def _gather(self, tensor: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
         # CPU mode trades memory for synchronous transfers. The default GPU path
@@ -226,15 +235,15 @@ class MotionLibrary:
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self._ref[:, 7:36].to(device=self.device, dtype=self.dtype)
+        return self._ref[:, 13:42].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_lin_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 36:39].to(device=self.device, dtype=self.dtype)
+        return self._ref[:, 7:10].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 39:42].to(device=self.device, dtype=self.dtype)
+        return self._ref[:, 10:13].to(device=self.device, dtype=self.dtype)
 
     @property
     def joint_vel(self) -> torch.Tensor:

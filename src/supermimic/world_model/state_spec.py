@@ -1,7 +1,7 @@
 """State representation for the world model (plan D1–D3).
 
-Simulator state  s = [root_pos(3), root_quat wxyz(4), joint_pos(29), root_lin_vel_w(3),
-                      root_ang_vel_b(3), joint_vel(29)]            (71, MuJoCo layout, origin-free)
+Model state s = [root_pos(3), root_quat wxyz(4), root_lin_vel_w(3),
+                 root_ang_vel_w(3), joint_pos(29), joint_vel(29)] (71, origin-free)
 
 Canonical features (network input, heading-invariant, 71):
     [root_z(1), rot6d(heading^-1 ⊗ root_quat)(6), root_lin_vel in heading frame(3),
@@ -73,7 +73,7 @@ class StateSpec:
 
     @staticmethod
     def split(s: torch.Tensor):
-        return s[..., 0:3], s[..., 3:7], s[..., 7:36], s[..., 36:39], s[..., 39:42], s[..., 42:71]
+        return s[..., 0:3], s[..., 3:7], s[..., 13:42], s[..., 7:10], quat_apply_inverse(s[..., 3:7], s[..., 10:13]), s[..., 42:71]
 
     def canonical(self, s: torch.Tensor) -> torch.Tensor:
         """Heading-invariant, scaled network input features (…, 71)."""
@@ -104,7 +104,7 @@ class StateSpec:
         p_new = p + dt * v_new + quat_apply(hq, dp_h)
         q_new = quat_normalize(quat_mul(q, quat_from_rotvec(dt * w_new + dth_b)))
         qj_new = qj + dt * qd_new + dq
-        return torch.cat([p_new, q_new, qj_new, v_new, w_new, qd_new], dim=-1)
+        return torch.cat([p_new, q_new, v_new, quat_apply(q_new, w_new), qj_new, qd_new], dim=-1)
 
     # ------------------------------------------------------------------ errors
 

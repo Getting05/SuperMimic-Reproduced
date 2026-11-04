@@ -33,13 +33,14 @@ def test_state_spec_identity_and_errors():
     s_rot = s.clone()
     s_rot[:, 0:2] += torch.randn(64, 2, dtype=torch.float64)
     s_rot[:, 3:7] = quat_mul(qy, s[:, 3:7])
-    s_rot[:, 36:39] = quat_apply(qy, s[:, 36:39])
+    s_rot[:, 7:10] = quat_apply(qy, s[:, 7:10])
+    s_rot[:, 10:13] = quat_apply(qy, s[:, 10:13])
     np.testing.assert_allclose(spec.canonical(s_rot).numpy(), spec.canonical(s).numpy(), atol=1e-9)
     # Explicit integration with zero delta = constant-velocity extrapolation.
     spec2 = StateSpec(StateSpecCfg(explicit_integration=True), dev, torch.float64)
     s3 = spec2.integrate(s, torch.zeros(64, 70, dtype=torch.float64))
-    np.testing.assert_allclose(s3[:, 0:3].numpy(), (s[:, 0:3] + 0.02 * s[:, 36:39]).numpy(), atol=1e-12)
-    np.testing.assert_allclose(s3[:, 7:36].numpy(), (s[:, 7:36] + 0.02 * s[:, 42:71]).numpy(), atol=1e-12)
+    np.testing.assert_allclose(s3[:, 0:3].numpy(), (s[:, 0:3] + 0.02 * s[:, 7:10]).numpy(), atol=1e-12)
+    np.testing.assert_allclose(s3[:, 13:42].numpy(), (s[:, 13:42] + 0.02 * s[:, 42:71]).numpy(), atol=1e-12)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or not NPZ.exists(), reason="needs CUDA + LAFAN1 npz")

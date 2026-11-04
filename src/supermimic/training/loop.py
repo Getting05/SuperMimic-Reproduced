@@ -143,6 +143,7 @@ class Trainer:
             return
         self._atomic_save(
             {
+                "format_version": "vibed-parity-state71-v1",
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
@@ -167,6 +168,8 @@ class Trainer:
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        if ck.get("format_version") != "vibed-parity-state71-v1":
+            raise ValueError("Incompatible checkpoint: Vibed71 state layout required; old dev/FSQ checkpoints cannot resume")
         if ck["config"]["env"].get("robot", "g1") != self.cfg.env.robot:
             raise ValueError("Checkpoint robot does not match the training robot")
         warm_start_sgs = self.command.sgs_sampler is not None and ck["config"]["env"].get("sampling_mode", "return") != "sgs"

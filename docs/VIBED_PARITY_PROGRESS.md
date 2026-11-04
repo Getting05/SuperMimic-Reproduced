@@ -1,6 +1,6 @@
 # Vibed parity implementation status
 
-Status: stage 1 baseline preparation only. Algorithm stages 2–10 have NOT been implemented.
+Status: stage 2 state boundaries implemented and tested. Stages 3–10 remain open.
 
 Source: `0ad10dfb043077fb9c7536169503e74a60a960e4` (origin/dev/FSQ).
 Reference: `0525a23a2dcfa61f8543f98b84c075fe66d9d286` (Vibed main).
@@ -8,13 +8,13 @@ Branch: `dev/vibed-parity-fsq`.
 Worktree: `/root/code/SuperMimic-vibed-parity`.
 The source worktree was clean and has not been modified.
 
-## Specification conflict requiring resolution
+## Solver decision (resolved by user)
 
 The attachment requires both preserving all Contact Solver settings and explicitly
 specifies nconmax=35/njmax=250. The actual latest source selects nconmax=128/njmax=768
 for P2, and 35/250 for G1. Both have iterations=10 and ls_iterations=20.
 No solver setting has been changed. The baseline test protects the actual source
-configuration, pending the user's decision. Do not silently revert P2 to 35/250.
+configuration, per the user's instruction to preserve the current solver. Do not silently revert P2 to 35/250.
 
 ## Completed validation
 
@@ -53,6 +53,9 @@ CUDA_VISIBLE_DEVICES=4 PYTHONPATH=$PWD/src MUJOCO_GL=egl \
 
 ## Remaining work
 
-All stages 2–10 in VIBED_PARITY_SPEC.md remain open. Old state slices,
-930D history and 680D goal are still active. No old-checkpoint rejection or new
-checkpoint format has been implemented. No parity completion is claimed.
+Stages 3–10 in VIBED_PARITY_SPEC.md remain open.
+930D history and 680D goal are still active. Old training checkpoints are now rejected before loading weights, using an interim state-layout format version. Full resume protocol remains stage 10. No parity completion is claimed.
+
+## Stage 2 evidence
+
+16 targeted tests passed in 8.74s. A real P2 CUDA integration checked StateIO read/write, reference native/model roundtrip, FK body positions versus simulator, and 12 physics steps: STATE71_SIM_REFERENCE_FK_OK, shape (2,71). Contact Solver and physical asset guards passed. The existing WM integration mathematics remains pending replacement in stage 8.
