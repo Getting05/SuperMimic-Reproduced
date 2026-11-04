@@ -30,7 +30,7 @@ def split_state(s: torch.Tensor):
 def analytic_observation(
     s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor, ref_quat: torch.Tensor
 ) -> torch.Tensor:
-    """Noise-free 93-d proprioceptive observation (paper Table A.1) from state + context.
+    """Noise-free 99-d proprioceptive observation (paper Table A.1) from state + context.
 
     xi[..., 1:30] is the encoder bias: observed joint positions are ``q + bias - q0``.
     """
@@ -57,7 +57,7 @@ ANCHOR_OBS_DIM = 9
 
 
 def flatten_history_term_major(hist: torch.Tensor) -> torch.Tensor:
-    """(H, N, 93) oldest→newest  ->  (N, 930) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
+    """(H, N, 99) oldest→newest  ->  (N, 990) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
     return hist.permute(1,0,2).flatten(1)
 
 

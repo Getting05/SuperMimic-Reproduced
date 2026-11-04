@@ -5,7 +5,7 @@ set -euo pipefail
 # 0. Environment
 # ============================================================
 
-PROJECT="/root/code/SuperMimic-Reproduced"
+PROJECT="${PROJECT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # 必须在 source 激活脚本之前设置 GPU 环境变量
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -45,9 +45,9 @@ RUN_NAME="${RUN_NAME:-p2_fsq_mix5clean_h200_4gpu_$(date +%Y%m%d_%H%M%S)}"
 # Per rank: best balanced training-sample throughput measured with 8192 envs.
 # Keep WM:policy batch ratio 1:2; overrides are available for new comparisons.
 # Benchmark results: logs/h200_fixed8192_batch_bench_20261103/results.json
-NUM_ENVS="${NUM_ENVS:-8192}"
-WM_BATCH_SIZE="${WM_BATCH_SIZE:-14336}"
-POLICY_BATCH_SIZE="${POLICY_BATCH_SIZE:-28672}"
+NUM_ENVS="${NUM_ENVS:-4096}"
+WM_BATCH_SIZE="${WM_BATCH_SIZE:-2048}"
+POLICY_BATCH_SIZE="${POLICY_BATCH_SIZE:-4096}"
 LIBRARY_DEVICE="${LIBRARY_DEVICE:-gpu}"
 # Excluded from training, available for concurrent evaluation.
 EVAL_GPU="${EVAL_GPU:-0}"
@@ -224,6 +224,7 @@ try:
         lengths = []
 
         offset = 0
+        state_layout = None
 
         for entry in group:
 
@@ -238,6 +239,10 @@ try:
                 weights_only=True
             )
 
+            layout=pack.get("state_layout","p_quat_q_v_w_world_qd")
+            if state_layout is not None and layout != state_layout:
+                raise ValueError("Mixed state layouts in rank cache")
+            state_layout=layout
             frames = entry["frames"]
 
             assert list(pack["joint_names"]) == joint_names
@@ -275,6 +280,7 @@ try:
 
         torch.save(
             dict(
+                state_layout=state_layout,
                 ref=ref,
                 names=names,
                 starts=starts,

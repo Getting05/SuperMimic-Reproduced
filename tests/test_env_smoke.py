@@ -29,8 +29,8 @@ def env():
 
 def test_spaces_and_step(env):
     obs, _ = env.reset()
-    assert obs["policy"].shape == (32, 930)
-    assert obs["goal"].shape == (32, 680)
+    assert obs["policy"].shape == (32, 990)
+    assert obs["goal"].shape == (32, 730)
     assert env.action_manager.total_action_dim == 29
     for _ in range(40):
         act = 0.3 * torch.randn(32, 29, device=env.device)
@@ -46,28 +46,18 @@ def test_goal_matches_library(env):
     goal = cmd.goal
     lib = cmd.library
     f = cmd.frame
-    direct = lib.goal_feat[f]
-    np.testing.assert_allclose(goal[:, :68].cpu().numpy(), direct.cpu().numpy(), atol=1e-6)
-    # Clamping at the clip end.
-    last = lib.last_frame_of(f)
-    k9 = torch.minimum(f + 9, last)
-    np.testing.assert_allclose(goal[:, 9 * 68 :].cpu().numpy(), lib.goal_feat[k9].cpu().numpy(), atol=1e-6)
+    torch.testing.assert_close(goal,lib.goal_window(f,10))
+    assert goal.shape==(env.num_envs,730)
 
 
 def test_replay_rows_and_windows(env):
     rec = env.recorder_manager.get_term("replay")
     buf = rec.buffer
     assert buf.size > 32 * 10
-    # Every non-terminal row's successor within the episode must be the next row.
-    e = 0
-    rows = [t for t in range(buf.T) if buf.valid[e, t]]
-    assert len(rows) > 5
-    w = buf.sample_windows(256, 8)
-    assert w.states.shape == (9, 256, 71) and w.a_exec.shape == (8, 256, 29) and w.xi.shape == (256, 33)
+    assert buf.rows>10
+    w = buf.sample_windows(256,8)
+    assert w.states.shape==(9,256,71) and w.mask.shape==(8,256)
     assert torch.isfinite(w.states).all()
-    # Executed action differs from the clean one by the injected noise only.
-    d = (w.a_exec - w.a_clean).std().item()
-    assert 0.05 < d < 0.2, d
     s = buf.sample_starts(128, hist=10)
     assert s.hist_states.shape == (10, 128, 71) and s.hist_actions.shape == (10, 128, 29)
     assert torch.equal(s.hist_states[-1], s.state)

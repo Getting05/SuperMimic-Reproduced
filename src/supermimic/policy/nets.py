@@ -22,14 +22,14 @@ class PolicyCfg:
     encoder_hidden: tuple[int, ...] = (2048, 1024, 512, 256)
     decoder_hidden: tuple[int, ...] = (2048, 1024, 512, 256)
     latent_dim: int = LATENT_DIM
-    fsq: bool = False
+    fsq: bool = True
     history: int = 10
     # Fixed per-term observation scales (divide): joint_pos, joint_vel, base_ang_vel, projected_gravity, actions.
     obs_term_scale: tuple[float, ...] = (1.0, 5.0, 2.0, 1.0, 1.0)
     # Fixed goal feature scales: joint_pos 29, joint_vel 29, grav 3, ang_vel_b 3, lin_vel_h 3, height 1.
     goal_term_scale: tuple[float, ...] = (1.0, 5.0, 1.0, 2.0, 1.0, 1.0)
     decoder_last_gain: float = 0.01
-    goal_dim: int = GOAL_DIM  # 680 (+9 with anchor_obs)
+    goal_dim: int = GOAL_DIM  # 730 (+9 with anchor_obs)
 
 
 @dataclass
@@ -76,6 +76,8 @@ class Policy(nn.Module):
 
     def __init__(self, cfg: PolicyCfg):
         super().__init__()
+        if not cfg.fsq:
+            raise ValueError("Vibed parity FSQ branch requires policy.fsq=True")
         self.cfg = cfg
         self.encoders = nn.ModuleDict({"motion": MotionEncoder(cfg)})
         self.decoder = Decoder(cfg)
@@ -88,7 +90,7 @@ class Policy(nn.Module):
 
 
 class Critic(nn.Module):
-    """V(canonical state 71, goal 680, xi 33, root error 4) -> scalar (one per interface)."""
+    """V(canonical state 71, goal 730, xi 33, root error 4) -> scalar (one per interface)."""
 
     def __init__(self, cfg: CriticCfg, feat_dim: int = 71, goal_dim: int | None = None, xi_dim: int = 33, pcfg: PolicyCfg | None = None):
         super().__init__()

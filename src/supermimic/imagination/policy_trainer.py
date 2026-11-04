@@ -96,13 +96,12 @@ class PolicyTrainer:
         self.critic.requires_grad_(False)
         ro = imagine(self.wm, self.policy, self.lib, start, cfg.horizon, cfg.future_frames, obs_noise=cfg.obs_noise, step_fn=self.step_fn, anchor_obs=cfg.anchor_obs)
         feat, goals, e_root = self._critic_inputs(ro,start.xi)
-        self.critic.norm.update(torch.cat((feat.detach(),goals.detach()),-1))
         if cfg.use_critic:
             v_H = self.critic(feat[-1], goals[-1])
         else:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
-        loss = -J / cfg.horizon
+        loss = -J
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
@@ -120,6 +119,7 @@ class PolicyTrainer:
             "imag_survival_H": float(ro.survival[-1].mean().detach()),
             "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
             "policy_grad_norm": float(gn),
+            "policy_skipped_nonfinite": float(not torch.isfinite(gn)),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
         }
         for k, v in ro.reward_terms.items():
@@ -127,6 +127,7 @@ class PolicyTrainer:
 
         # ---- critic: fit to GAE targets of this rollout (targets fixed) ---------------------
         if cfg.use_critic:
+            self.critic.norm.update(torch.cat((feat.detach(),goals.detach()),-1))
             with torch.no_grad():
                 feat_d, goals_d, e_root_d = feat.detach(), goals.detach(), e_root.detach()
                 H1, n, _ = feat_d.shape

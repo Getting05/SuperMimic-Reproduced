@@ -1,6 +1,6 @@
 """One imagined step as a single compiled function (plan 3.6: launch-overhead control).
 
-``ImagStep`` bundles world-model dynamics, analytic FK reward, termination logits and the
+``ImagStep`` bundles world-model dynamics, analytic FK reward, analytic soft termination and the
 next noise-free observation into one call so ``torch.compile`` can fuse the hundreds of
 small kernels of the per-body FK loop. Reference quantities are passed as plain tensors
 (already gathered from the motion library) so the compiled graph has static shapes.
@@ -41,11 +41,11 @@ class ImagStep:
         terms = self.wm.heads.reward(s_next, a, a_prev, ref, bodies)
         r = terms["total"]
         term_vec = torch.stack([terms[k] for k in REWARD_TERM_NAMES], dim=0)  # (8, n)
-        logits = self.wm.termination_logits(s_next, ref)
+        termination = self.wm.heads.soft_termination(s_next, ref)
         obs_clean = analytic_observation(s_next, a, xi, self.q0, ref_root_quat)
         ai = self.wm.heads.anchor_index
         anchor_pose = torch.cat([bodies["pos"][..., ai, :], bodies["quat"][..., ai, :]], dim=-1)  # (n, 7)
-        return s_next, r, term_vec, logits, obs_clean, anchor_pose
+        return s_next, r, term_vec, termination, obs_clean, anchor_pose
 
     def __call__(self, s, a, a_prev, xi, ref: ReferenceFrame):
         return self._fn(s, a, a_prev, xi, ref.body_pos_w, ref.body_quat_w, ref.body_lin_vel_w, ref.body_ang_vel_w, ref.root_pos_w, ref.root_quat_w)

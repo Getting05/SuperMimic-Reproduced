@@ -25,7 +25,7 @@ def bad_root_tilt(env: ManagerBasedRlEnv, command_name: str, threshold: float = 
 
 def clip_end(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     cmd = cast(MultiClipMotionCommand, env.command_manager.get_term(command_name))
-    return cmd.clip_end
+    return cmd.frame+1 >= cmd.library.last_frame_of(cmd.frame)
 
 
 def sgs_horizon(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:

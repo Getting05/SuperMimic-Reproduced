@@ -56,9 +56,6 @@ class WorldModel(nn.Module):
         self.in_norm.update(self.inputs(s,a,xi))
         self.out_norm.update(self.spec.targets(s,s1))
 
-    def termination_logits(self,s_next,ref):
-        return torch.logit(self.heads.soft_termination(s_next,ref).clamp(1e-7,1-1e-7))
-
     def enable_compile(self,mode="default"):
         self._step_fn=torch.compile(self.step,mode=None if mode=="default" else mode,dynamic=False) if mode else self.step
 
@@ -78,12 +75,14 @@ class WorldModel(nn.Module):
     # ------------------------------------------------------------------ diagnostics
 
     @torch.no_grad()
-    def rollout_error(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor) -> torch.Tensor:
+    def rollout_error(self, states: torch.Tensor, a_exec: torch.Tensor, xi: torch.Tensor, mask=None) -> torch.Tensor:
         """Open-loop k-step normalised squared error per step (k,), averaged over the batch."""
         k = a_exec.shape[0]
         s = states[0]
         out = []
         for j in range(k):
             s = self.step(s, a_exec[j], xi)
-            out.append(self.spec.normalized_sq_error(s, states[j + 1]).mean())
+            e=(self.spec.targets(states[j+1],s)/torch.maximum(self.out_norm.std(),self.err_floor)).square().mean(-1)
+            valid=mask[j] if mask is not None else torch.ones_like(e)
+            out.append((e*valid).sum()/valid.sum().clamp_min(1))
         return torch.stack(out)

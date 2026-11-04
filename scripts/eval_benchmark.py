@@ -26,7 +26,7 @@ def main(ckpt: Path, npz_dir: Path = Path("data/npz/lafan1"), clips: list[str] |
         anchor_obs=cfg["env"].get("anchor_obs", False),
     )
     s = summarize(results)
-    print(f"\n{s['clips']} clips | failed {s['failed']} | mean norm return {s['mean_norm_return']:.4f} | step-weighted {s['step_weighted_norm_return']:.4f}")
+    print(f"\n{s['clips']} clips | failed {s['failed']} | mean norm return {s['mean_norm_return']:.4f} | reference-frame-weighted {s['reference_frame_weighted_norm_return']:.4f}")
     if "terms" in s:
         print("per-step term means (max 0.02 each for the 1.0-weight terms, 0.01 for root terms):")
         for k, v in s["terms"].items():

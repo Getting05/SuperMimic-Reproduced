@@ -62,7 +62,7 @@ def test_world_model_overfits_replay_windows():
         rec = env.recorder_manager.get_term("replay")
         robot = env.scene["robot"]
         fk = G1Kinematics(load_g1_model(), device=env.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(fk, TRACKED_BODIES, "pelvis", ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         wm = WorldModel(WorldModelCfg(hidden=(512, 512, 512)), heads, env.device)
         lib = env.command_manager.get_term("motion").library
         tr = WorldModelTrainer(wm, lib, WMTrainerCfg(batch_size=512, batches_per_update=1, lr=1e-3))

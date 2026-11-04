@@ -24,7 +24,7 @@ def main(npz_dir: Path, out: Path, manifest: Path | None = None, workers: int = 
         with np.load(f) as d:
             names = [str(n) for n in d["body_names"]]
             r = names.index("pelvis")
-            ref = np.concatenate([d["body_pos_w"][:, r], d["body_quat_w"][:, r], d["joint_pos"], d["body_lin_vel_w"][:, r], d["body_ang_vel_w"][:, r], d["joint_vel"]], axis=1)
+            ref = np.concatenate([d["body_pos_w"][:, r], d["body_quat_w"][:, r], d["body_lin_vel_w"][:, r], d["body_ang_vel_w"][:, r], d["joint_pos"], d["joint_vel"]], axis=1)
             joints = tuple(d.get("joint_names", ()))
         return f.stem, ref.astype(np.float16), joints
 
@@ -38,7 +38,7 @@ def main(npz_dir: Path, out: Path, manifest: Path | None = None, workers: int = 
     if any(joints != joint_names for _, _, joints in items):
         raise ValueError("All clips must have the same joint order")
     out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"ref": ref, "names": names, "starts": starts, "lengths": lengths, "joint_names": joint_names}, out)
+    torch.save({"state_layout": "vibed71", "ref": ref, "names": names, "starts": starts, "lengths": lengths, "joint_names": joint_names}, out)
     print(f"saved {out}: {ref.shape[0]} frames ({ref.shape[0]/50/3600:.2f} h), {ref.numel()*2/1e9:.2f} GB fp16")
 
 

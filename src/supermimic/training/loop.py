@@ -42,6 +42,21 @@ WM_ONLY_UPDATES = 500
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
+        import warnings
+        from supermimic.policy.nets import PolicyCfg
+        from supermimic.world_model.state_spec import StateSpecCfg
+        for name in ("obs_term_scale","goal_term_scale"):
+            if getattr(cfg.policy,name)!=getattr(PolicyCfg(),name):
+                warnings.warn(f"policy.{name} is deprecated and ignored; RunningNorm is active")
+        for name in ("err_scale","out_scale","in_scale","explicit_integration"):
+            if getattr(cfg.world_model.state_spec,name)!=getattr(StateSpecCfg(),name):
+                warnings.warn(f"state_spec.{name} is deprecated and ignored by Vibed dynamics")
+        if cfg.world_model.term_hidden!=(64,64) or cfg.world_model.term_loss_weight!=1.:
+            warnings.warn("learned termination config is deprecated and ignored")
+        if cfg.env.anchor_obs:
+            warnings.warn("anchor_obs adds 9D research input and is outside strict Vibed parity")
+        if cfg.env.p2_advanced_actuators:
+            warnings.warn("Advanced actuator delay has hidden state absent from WM71; parity baseline uses standard PD")
         cfg.policy.goal_dim = cfg.env.future_frames * 73 + (9 if cfg.env.anchor_obs else 0)
         cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
         self.rank, local_rank, self.world = init_distributed()
@@ -196,9 +211,6 @@ class Trainer:
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
-        if warm_start_sgs:
-            print("[INFO] SGS initialized model weights from legacy checkpoint; fresh optimizer and sampler")
-            return
         files=ck.get("rank_files",[])
         if len(files)!=self.world:raise ValueError("Resume requires matching world size and rank files")
         state=torch.load(Path(path).parent/files[self.rank],map_location="cpu",weights_only=False)
@@ -255,6 +267,7 @@ class Trainer:
         finished_lens: list[float] = []
         last_log = time.time()
         collected_since_reset = 0
+        reason_counts={name:torch.zeros((),device=self.device) for name in env.termination_manager.active_terms}
 
         while self.iteration < sch.total_iterations:
             # ---------------- (1) collect one vectorised env step
@@ -264,6 +277,8 @@ class Trainer:
             obs, rew, term, tout, extras = env.step(action)
             row=(self.buffer.ptr-1)%self.buffer.T
             self.wm.update_normalization(self.buffer.s[row],self.buffer.s1[row],self.buffer.a[row],self.buffer.xi[row])
+            for name,count in reason_counts.items():
+                count.add_(env.termination_manager.get_term(name).sum())
             self.ep_reward_sum += rew
             self.ep_len += 1
             done = term | tout
@@ -284,7 +299,7 @@ class Trainer:
             # ---------------- (2)+(3) updates at the configured update-to-data ratio
             if collected_since_reset > sch.warmup_iterations:
                 self._utd_acc += sch.updates_per_env_step
-                while self._utd_acc >= 1.0:
+                while self._utd_acc >= 1.0 and self.iteration < sch.total_iterations:
                     self._utd_acc -= 1.0
                     lr = cosine_lr(self.iteration, 320000, cfg.wm_trainer.lr, sch.lr_final_ratio, 250000/320000)
                     self.wm_trainer.set_lr(lr)
@@ -341,13 +356,15 @@ class Trainer:
                 else:
                     tr = float("nan")
                 with torch.no_grad():
-                    if self.is_main and self.buffer.size > 2048:
+                    if self.is_main and min(self.buffer.rows,self.buffer.T) >= 8:
                         err = self.wm_trainer.online_error(self.buffer, n=1024, k=8)
                         metrics["wm/online_nse_1step"] = float(err[0])
                         metrics["wm/online_nse_8step"] = float(err[-1])
                     else:
                         err = None
                 if self.is_main:
+                    for name,count in reason_counts.items():
+                        metrics[f"train/rank0_termination/{name}"]=float(count)
                     for k, v in timers.items():
                         metrics[f"time/{k}_s_per_iter"] = v / sch.log_interval
                     metrics["gpu/peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 1024**3
@@ -387,6 +404,7 @@ class Trainer:
                 agg, agg_n = {}, 0
                 finished_returns, finished_lens = [], []
                 timers = {k: 0.0 for k in timers}
+                for count in reason_counts.values():count.zero_()
             if self.iteration % sch.checkpoint_interval == 0:
                 self.save("ckpt_latest.pt")
                 self.save(f"ckpt_{self.iteration:07d}.pt")

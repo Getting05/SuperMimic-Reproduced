@@ -70,4 +70,4 @@ class WorldModelTrainer:
     def online_error(self, buffer: ReplayBuffer, n: int = 1024, k: int = 8) -> torch.Tensor:
         """k-step open-loop error on (recent) replay windows; (k,) tensor."""
         w = buffer.sample_windows(n, k)
-        return self.wm.rollout_error(w.states, w.a_exec, w.xi)
+        return self.wm.rollout_error(w.states, w.a_exec, w.xi, w.mask)

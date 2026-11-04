@@ -1,89 +1,25 @@
-# Vibed parity implementation status
+# Implementation progress
 
-Status: stage 2 state boundaries implemented and tested. Stages 3–10 remain open.
+Source: 0ad10dfb043077fb9c7536169503e74a60a960e4.
+Reference: 0525a23a2dcfa61f8543f98b84c075fe66d9d286.
+Branch: dev/vibed-parity-fsq.
 
-Source: `0ad10dfb043077fb9c7536169503e74a60a960e4` (origin/dev/FSQ).
-Reference: `0525a23a2dcfa61f8543f98b84c075fe66d9d286` (Vibed main).
-Branch: `dev/vibed-parity-fsq`.
-Worktree: `/root/code/SuperMimic-vibed-parity`.
-The source worktree was clean and has not been modified.
+The ten implementation stages are submitted separately. Full acceptance is not
+claimed: see VIBED_PARITY_REPORT.md for all passed, skipped and unperformed checks.
 
-## Solver decision (resolved by user)
+| Stage | Commit / validation |
+|---|---|
+| 1 Baseline | cf44906; SGS and source training smoke |
+| 2 State | a28a6c9;17 targeted tests, real P2 StateIO/reference/FK |
+| 3 Obs/goal | 4f0abad;18 tests, real990/730 policy simulation |
+| 4 Reward/time | ce766c6;20 tests, pelvis reward simulation |
+| 5 Action noise | 25d68b6;22 tests, executed action simulation |
+| 6 Replay | 4757777;24 tests, six steps/three reset snapshots |
+| 7 Networks/norm | e319175;26 tests, joint optimizer smoke |
+| 8 WM | ba178bb;28 tests, closure/eight-step backward/joint smoke |
+| 9 Schedule | d834940;30 tests; actual501 rounds/1317 env steps |
+| 10 Final audit/eval/resume | final HEAD;42 passed,17 skipped; real two-GPU NCCL+SGS/joint/resume, CPU library, G1, reference tensor and compile checks |
 
-The attachment requires both preserving all Contact Solver settings and explicitly
-specifies nconmax=35/njmax=250. The actual latest source selects nconmax=128/njmax=768
-for P2, and 35/250 for G1. Both have iterations=10 and ls_iterations=20.
-No solver setting has been changed. The baseline test protects the actual source
-configuration, per the user's instruction to preserve the current solver. Do not silently revert P2 to 35/250.
-
-## Completed validation
-
-- Baseline protection + dimension arithmetic + SGS suite: 13 passed in 8.88s.
-- Baseline dimensional/slice scan recorded 50 candidate lines for later review.
-
-- Existing SGS unit tests: 9 passed (one upstream Torch deprecation warning).
-- P2 FSQ CUDA smoke on physical GPU 4: 52 vectorized env steps, 2 envs, 128 replay
-  capacity, WM and policy updates executed, BASELINE_TRAIN_OK, exit 0.
-- Smoke used the existing stand NPZ at /tmp/supermimic-p2-smoke.Muge4b/motions.
-  This is only a synthetic pipeline check, not a tracking quality benchmark.
-- Smoke options: warmup=12, UTD=.05, WM batches=1/batch=8, policy batch=8/horizon=8,
-  critic epochs=1/minibatches=1, compile disabled.
-- Baseline log reported nse1=.0783 and nse8=nan. This smoke does NOT establish
-  finite 8-step WM evaluation; the nan requires diagnosis before claiming that
-  acceptance criterion passes.
-- An earlier smoke invocation used a nonexistent compact-library path and failed
-  with FileNotFoundError. The subsequent successful run used the existing NPZ.
-- Single-card parity, multi-card parity, resume, eval, reward equivalence and
-  all new tensor-layout acceptance tests remain unperformed.
-
-## Environment
-
-The worktree reuses the source installation through PYTHONPATH and a local
-untracked asset symlink. No environment or source install was changed.
-The asset symlink must not be committed.
-
-## Test command
-
-```bash
-cd /root/code/SuperMimic-vibed-parity
-CUDA_VISIBLE_DEVICES=4 PYTHONPATH=$PWD/src MUJOCO_GL=egl \
-  /root/code/SuperMimic-Reproduced/.venv/bin/python -m pytest \
-  tests/test_vibed_parity_contract.py tests/test_sgs_sampler.py -q
-```
-
-## Remaining work
-
-Stages 3–10 in VIBED_PARITY_SPEC.md remain open.
-930D history and 680D goal are still active. Old training checkpoints are now rejected before loading weights, using an interim state-layout format version. Full resume protocol remains stage 10. No parity completion is claimed.
-
-## Stage 2 evidence
-
-16 targeted tests passed in 8.74s. A real P2 CUDA integration checked StateIO read/write, reference native/model roundtrip, FK body positions versus simulator, and 12 physics steps: STATE71_SIM_REFERENCE_FK_OK, shape (2,71). Contact Solver and physical asset guards passed. The existing WM integration mathematics remains pending replacement in stage 8.
-
-## Stage 3
-
-99D current observation, time-major 990D history, 73D future frames and 730D goal implemented. 18 targeted tests passed in 8.61s. Real P2 environment reset history repetition and four FSQ policy physics steps passed: GOAL_OBS_POLICY_SIM_OK (2,990)/(2,730). Reward time alignment and paired action bias remain stages 4/5.
-
-## Stage 4
-
-Pelvis anchor, post-integration analytic FK rewards and f+1 reference, analytic soft termination implemented. 20 targeted tests passed in 8.25s; P2 physics reward smoke passed three steps. Source mjlab step ordering inspected: rewards precede command advance and use stale derived kinematics; shared FK wrappers explicitly resolve both issues. Solver unchanged.
-
-## Stage 5
-
-Collector-only Gaussian execution noise, clamp [-20,20], paired negative observation bias/positive target bias, friction startup implemented. 22 tests passed in 9.20s. Real P2 integration verified identical collector, ActionManager and action-term executed actions: EXECUTED_ACTION_SIM_OK.
-
-## Stage 6
-
-Time-major transition ring and reset-safe recorder implemented. 24 targeted tests passed in 9.13s. Real P2 hook test forced 3 timeouts in 6 steps, compared stored s1 to pre-reset snapshots and asserted exactly 6 full rows: RESET_HOOK_TIME_MAJOR_OK 6 3. History uses per-row xi/f and ep_step clipping. Full SGS training regression remains final validation.
-
-## Stage 7
-
-ELU policy/critic, RunningNorm with distributed batch moments, normalized 99D per-frame policy input, 914D critic with body/joint/root errors implemented. 26 targeted tests passed in 9.28s after fixing a decoder syntax error caught at collection. P2 simulator + WM/policy/critic optimizer smoke passed: NORM_CRITIC_TRAIN_OK. Full distributed smoke remains final validation.
-
-## Stage 8
-
-Direct 70D local increments, LayerNorm+SiLU dynamics, 133/70 RunningNorm, masked dimension-mean/time-sum loss, analytic termination implemented. 28 tests passed in 9.85s, including target/integrate closure and 8-step backward. Real P2 joint WM/actor/critic smoke passed. Compile profiling remains final validation.
-
-## Stage 9
-
-WM-update counting, warmup64, fixed WM_ONLY_UPDATES=500, legal imagination starts and 250k LR decay implemented. 30 targeted tests passed in 9.55s. A reduced-network P2 training smoke actually executed all 501 WM rounds, 1317 vectorized steps, and entered actor/critic training after round500: PARITY_TRAIN_OK 501 1317 1. WM-only actor/critic metrics are absent by design; displayed nse8 is missing because the tiny replay is below the old diagnostic threshold, not proof of NaN predictions. Full parameter-finiteness checks follow final validation.
+User-approved Contact Solver settings are preserved: P2 128/768, G1 35/250.
+No source worktree or running training was modified. The isolated worktree's
+untracked asset symlink is a local environment dependency and is not committed.

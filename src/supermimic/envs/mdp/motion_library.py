@@ -63,13 +63,6 @@ class RefBodies:
     ang_vel_w: torch.Tensor  # (N,B,3)
 
 
-def goal_features(ref: RefState, default_joint_pos: torch.Tensor) -> torch.Tensor:
-    q = ref.root_quat_w
-    grav = projected_gravity(q)
-    ang_b = quat_apply_inverse(q, ref.root_ang_vel_w)
-    lin_h = quat_apply_inverse(yaw_quat(q), ref.root_lin_vel_w)
-    height = ref.root_pos_w[..., 2:3]
-    return torch.cat([ref.joint_pos - default_joint_pos, ref.joint_vel, grav, ang_b, lin_h, height], dim=-1)
 
 
 class MotionLibrary:
@@ -169,7 +162,6 @@ class MotionLibrary:
             self.body_lin_vel_w = t(body_chunks["lin"])
             self.body_ang_vel_w = t(body_chunks["ang"])
             del body_chunks
-            self.goal_feat = goal_features(self._split(self._ref), q0.to(self.storage_device))
         else:
             from supermimic.data.motion_convert import load_g1_model
             from supermimic.kinematics.g1_fk import G1Kinematics
@@ -209,10 +201,13 @@ class MotionLibrary:
         return tensor[frame.to(tensor.device)].to(device=self.device, dtype=self.dtype)
 
     def ref(self, frame: torch.Tensor) -> RefState:
-        return self._split(self._gather(self._ref, frame))
+        return self._split(self.ref71(frame))
 
     def ref71(self, frame: torch.Tensor) -> torch.Tensor:
-        return self._gather(self._ref, frame)
+        from supermimic.kinematics.rotations import quat_normalize
+        r=self._gather(self._ref, frame).clone()
+        r[...,3:7]=quat_normalize(r[...,3:7])
+        return r
 
     def bodies(self, frame: torch.Tensor) -> RefBodies:
         """Tracked-body link states (world) at the given frames."""
@@ -231,7 +226,8 @@ class MotionLibrary:
 
     @property
     def root_quat_w(self) -> torch.Tensor:
-        return self._ref[:, 3:7].to(device=self.device, dtype=self.dtype)
+        from supermimic.kinematics.rotations import quat_normalize
+        return quat_normalize(self._ref[:, 3:7].to(device=self.device, dtype=self.dtype))
 
     @property
     def joint_pos(self) -> torch.Tensor:
@@ -288,7 +284,7 @@ class MotionLibrary:
         hours = self.num_frames / 50.0 / 3600.0
         mem = self._ref.numel() * self._ref.element_size() / 1e9
         if not self.compact:
-            mem += sum(t.numel() * t.element_size() for t in (self.body_pos_w, self.body_quat_w, self.body_lin_vel_w, self.body_ang_vel_w, self.goal_feat)) / 1e9
+            mem += sum(t.numel() * t.element_size() for t in (self.body_pos_w, self.body_quat_w, self.body_lin_vel_w, self.body_ang_vel_w)) / 1e9
         return f"MotionLibrary({'compact' if self.compact else 'full'}): {self.num_clips} clips, {self.num_frames} frames ({hours:.3f} h @50Hz), {self.num_bins} bins, {mem:.2f} GB on {self.storage_device} (compute {self.device})"
 
 

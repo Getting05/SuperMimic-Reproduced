@@ -5,7 +5,7 @@ set -euo pipefail
 # 0. Environment
 # ============================================================
 
-PROJECT="/root/code/SuperMimic-Reproduced"
+PROJECT="${PROJECT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # 必须在 source 激活脚本之前设置 GPU 环境变量
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
@@ -224,6 +224,7 @@ try:
         lengths = []
 
         offset = 0
+        state_layout = None
 
         for entry in group:
 
@@ -238,6 +239,10 @@ try:
                 weights_only=True
             )
 
+            layout=pack.get("state_layout","p_quat_q_v_w_world_qd")
+            if state_layout is not None and layout != state_layout:
+                raise ValueError("Mixed state layouts in rank cache")
+            state_layout=layout
             frames = entry["frames"]
 
             assert list(pack["joint_names"]) == joint_names
@@ -275,6 +280,7 @@ try:
 
         torch.save(
             dict(
+                state_layout=state_layout,
                 ref=ref,
                 names=names,
                 starts=starts,

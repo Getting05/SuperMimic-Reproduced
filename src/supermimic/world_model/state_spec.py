@@ -1,22 +1,7 @@
-"""State representation for the world model (plan D1–D3).
+"""Vibed71 model state, invariant features and direct frame-local delta70.
 
-Model state s = [root_pos(3), root_quat wxyz(4), root_lin_vel_w(3),
-                 root_ang_vel_w(3), joint_pos(29), joint_vel(29)] (71, origin-free)
-
-Canonical features (network input, heading-invariant, 71):
-    [root_z(1), rot6d(heading^-1 ⊗ root_quat)(6), root_lin_vel in heading frame(3),
-     root_ang_vel_b(3), joint_pos(29), joint_vel(29)]
-
-Network output ``delta`` (70) and the integration step (dt = 0.02 s):
-    dv_h(3), dw_b(3), dqd(29)            velocity increments, heading / body frame
-    dp_h(3), dth_b(3), dq(29)            position corrections on top of explicit integration
-    v'  = v + R_h dv_h               w' = w + dw_b          qd' = qd + dqd
-    p'  = p + dt v' + R_h dp_h       q' = q ⊗ exp(dt w' + dth_b)    qj' = qj + dt qd' + dq
-With zero output the model extrapolates at constant velocity (a physical prior); the
-last layer of the dynamics MLP is zero-initialised so training starts from it.
-
-Loss / error normalisation (D3): per-quantity nominal scales sigma applied to the
-70-d error vector [dp(3), rotvec(3), dv(3), dw(3), dq(29), dqd(29)].
+Native MuJoCo layout is confined to StateIO. Legacy scale/integration config
+fields remain deprecated schema entries and have no effect on active dynamics.
 """
 
 from __future__ import annotations

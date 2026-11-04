@@ -14,7 +14,7 @@ from supermimic.world_model.heads import ReferenceFrame, analytic_observation, a
 from supermimic.world_model.wm_trainer import reference_at
 from supermimic.world_model.world_model import WorldModel
 
-# Paper Table A.1 sensor noise (uniform half-widths) in the 93-d observation order.
+# Paper Table A.1 sensor noise (uniform half-widths) in the 99-d observation order.
 OBS_NOISE_HALF = torch.tensor([0.01] * 29 + [0.5] * 29 + [0.2] * 3 + [0.05] * 3 + [0.0] * 29 + [0.05] * 6)
 ANCHOR_NOISE_HALF = torch.tensor([0.25] * 3 + [0.05] * 6)
 
@@ -26,7 +26,7 @@ class ImagRollout:
     rewards: torch.Tensor  # (H, n)      r_{t+1}
     dhat: torch.Tensor  # (H+1, n)    predicted termination prob of s_t (d_0 = 0)
     survival: torch.Tensor  # (H+1, n)    c_t
-    goals: torch.Tensor  # (H+1, n, 680)
+    goals: torch.Tensor  # (H+1, n, 730)
     e_root: torch.Tensor  # (H+1, n, 4)
     frames: torch.Tensor  # (H+1, n)
     reward_terms: dict  # mean of each reward term over the rollout (diagnostics)
@@ -103,8 +103,7 @@ def imagine(
     for t in range(horizon):
         obs_flat = flatten_history_term_major(torch.stack(hist, 0))
         a = policy(obs_flat, goals[-1])
-        s_next, r, term_vec, logits, obs_clean, anchor_pose = step_fn(s, a, a_prev, start.xi, ref_at(t + 1))
-        d = torch.sigmoid(logits)
+        s_next, r, term_vec, d, obs_clean, anchor_pose = step_fn(s, a, a_prev, start.xi, ref_at(t + 1))
         c = c * (1.0 - d)
         term_sum += term_vec.detach().mean(-1)
 
