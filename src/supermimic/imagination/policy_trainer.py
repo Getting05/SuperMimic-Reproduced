@@ -37,6 +37,28 @@ class PolicyTrainerCfg:
     anchor_obs: bool = False  # None | "default" | "reduce-overhead" | "max-autotune-no-cudagraphs"
 
 
+def sample_valid_starts(buffer,lib,batch,hist,horizon):
+    from dataclasses import fields
+    from supermimic.data.replay_buffer import StartBatch
+    if not bool((lib.clip_len>horizon).any()):
+        raise ValueError(f"No clip supports imagination horizon {horizon}")
+    chunks=[];count=0
+    for _ in range(128):
+        candidate=buffer.sample_starts(2*batch,hist)
+        ok=(candidate.frame+horizon<=lib.last_frame_of(candidate.frame)).nonzero().flatten()[:batch-count]
+        if ok.numel():
+            values={}
+            for f in fields(StartBatch):
+                x=getattr(candidate,f.name)
+                values[f.name]=x[:,ok] if f.name.startswith("hist_") else x[ok]
+            chunks.append(values);count+=ok.numel()
+        if count==batch:
+            return StartBatch(**{f.name:torch.cat([c[f.name] for c in chunks],
+                dim=1 if f.name.startswith("hist_") else 0) for f in fields(StartBatch)})
+    raise RuntimeError("Replay contains insufficient valid imagination starts; collect more data")
+
+
+
 class PolicyTrainer:
     def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
@@ -66,7 +88,7 @@ class PolicyTrainer:
 
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
         cfg = self.cfg
-        start = buffer.sample_starts(cfg.batch_size, cfg.history)
+        start = sample_valid_starts(buffer,self.lib,cfg.batch_size,cfg.history,cfg.horizon)
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------

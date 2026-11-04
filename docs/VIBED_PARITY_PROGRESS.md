@@ -83,3 +83,7 @@ ELU policy/critic, RunningNorm with distributed batch moments, normalized 99D pe
 ## Stage 8
 
 Direct 70D local increments, LayerNorm+SiLU dynamics, 133/70 RunningNorm, masked dimension-mean/time-sum loss, analytic termination implemented. 28 tests passed in 9.85s, including target/integrate closure and 8-step backward. Real P2 joint WM/actor/critic smoke passed. Compile profiling remains final validation.
+
+## Stage 9
+
+WM-update counting, warmup64, fixed WM_ONLY_UPDATES=500, legal imagination starts and 250k LR decay implemented. 30 targeted tests passed in 9.55s. A reduced-network P2 training smoke actually executed all 501 WM rounds, 1317 vectorized steps, and entered actor/critic training after round500: PARITY_TRAIN_OK 501 1317 1. WM-only actor/critic metrics are absent by design; displayed nse8 is missing because the tiny replay is below the old diagnostic threshold, not proof of NaN predictions. Full parameter-finiteness checks follow final validation.

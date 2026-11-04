@@ -81,6 +81,8 @@ def imagine(
     # All target frames of the rollout are known up front (frame + t, clamped at the clip end):
     # gather / FK the references for every step in one batched call.
     last = lib.last_frame_of(frame)
+    if bool((frame+horizon>last).any()):
+        raise ValueError("Imagination start lacks complete reference horizon")
     frames_all = torch.minimum(frame[None, :] + torch.arange(horizon + 1, device=device)[:, None], last[None, :])  # (H+1, n)
     ref_all = reference_at(lib, frames_all.reshape(-1))
 

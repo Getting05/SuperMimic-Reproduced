@@ -49,10 +49,10 @@ class EnvCfg:
 
 @dataclass
 class ScheduleCfg:
-    total_iterations: int = 320_000  # env steps (plan D12 reading A)
+    total_iterations: int = 320_000  # WM update rounds
     updates_per_env_step: float = 0.4  # UTD
     policy_updates_per_wm_update: int = 1
-    warmup_iterations: int = 40  # env steps before the first update (fills k-step windows)
+    warmup_iterations: int = 64  # env steps before the first update (fills k-step windows)
     lr_final_ratio: float = 0.03
     lr_decay_fraction: float = 250_000 / 320_000
     log_interval: int = 50  # iterations
