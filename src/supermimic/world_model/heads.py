@@ -139,6 +139,11 @@ class AnalyticHeads:
         f = self.termination_features(s[..., 0:3], s[..., 3:7], ref)  # pelvis == free-joint root
         return (f[..., 0].abs() > height_thr) | (f[..., 1].abs() > tilt_thr)
 
+    def soft_termination(self, s, ref, tz=.02, tt=.04):
+        errors=self.termination_features(s[...,:3],s[...,3:7],ref).abs()
+        alive=(1-torch.sigmoid((errors[...,0]-.25)/tz))*(1-torch.sigmoid((errors[...,1]-.8)/tt))
+        return 1-alive
+
     @staticmethod
     def root_error_features(s: torch.Tensor, ref: ReferenceFrame) -> torch.Tensor:
         """Critic-only privileged drift features (plan D10): root position error in the reference

@@ -14,16 +14,13 @@ if TYPE_CHECKING:
 
 
 def bad_root_height(env: ManagerBasedRlEnv, command_name: str, threshold: float = 0.25) -> torch.Tensor:
-    cmd = cast(MultiClipMotionCommand, env.command_manager.get_term(command_name))
-    return (cmd.root_pos_w[:, 2] - cmd.robot_root_pos_w[:, 2]).abs() > threshold
+    from supermimic.envs.mdp.rewards import simulator_termination_error
+    return simulator_termination_error(env)[:,0].abs() > threshold
 
 
 def bad_root_tilt(env: ManagerBasedRlEnv, command_name: str, threshold: float = 0.8) -> torch.Tensor:
-    cmd = cast(MultiClipMotionCommand, env.command_manager.get_term(command_name))
-    g = cmd.robot.data.gravity_vec_w
-    ref = quat_apply_inverse(cmd.root_quat_w, g)[:, 2]
-    rob = quat_apply_inverse(cmd.robot_root_quat_w, g)[:, 2]
-    return (ref - rob).abs() > threshold
+    from supermimic.envs.mdp.rewards import simulator_termination_error
+    return simulator_termination_error(env)[:,1].abs() > threshold
 
 
 def clip_end(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:

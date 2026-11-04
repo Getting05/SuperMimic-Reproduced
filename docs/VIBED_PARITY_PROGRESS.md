@@ -63,3 +63,7 @@ Stages 3–10 in VIBED_PARITY_SPEC.md remain open.
 ## Stage 3
 
 99D current observation, time-major 990D history, 73D future frames and 730D goal implemented. 18 targeted tests passed in 8.61s. Real P2 environment reset history repetition and four FSQ policy physics steps passed: GOAL_OBS_POLICY_SIM_OK (2,990)/(2,730). Reward time alignment and paired action bias remain stages 4/5.
+
+## Stage 4
+
+Pelvis anchor, post-integration analytic FK rewards and f+1 reference, analytic soft termination implemented. 20 targeted tests passed in 8.25s; P2 physics reward smoke passed three steps. Source mjlab step ordering inspected: rewards precede command advance and use stale derived kinematics; shared FK wrappers explicitly resolve both issues. Solver unchanged.

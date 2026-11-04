@@ -111,8 +111,9 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     else:
         robot_cfg, action_scale = get_g1_robot_cfg(), G1_ACTION_SCALE
         foot_geom_regex = FOOT_GEOM_REGEX
-    anchor_body = "waist_roll_link" if a.robot == "p2" else ANCHOR_BODY
-    tracked_bodies = tuple(anchor_body if name == ANCHOR_BODY else name for name in TRACKED_BODIES)
+    physical_com_body = "waist_roll_link" if a.robot == "p2" else ANCHOR_BODY
+    anchor_body = "pelvis"
+    tracked_bodies = tuple(physical_com_body if name == ANCHOR_BODY else name for name in TRACKED_BODIES)
     # ---------------------------------------------------------------- observations
     noise = (lambda lo, hi: Unoise(n_min=lo, n_max=hi)) if a.obs_noise else (lambda lo, hi: None)
     policy_terms = {"frame": ObservationTermCfg(
@@ -192,7 +193,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             mode="startup",
             func=dr.body_com_offset,
             params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=(anchor_body,)),
+                "asset_cfg": SceneEntityCfg("robot", body_names=(physical_com_body,)),
                 "operation": "add",
                 "ranges": {0: (-0.025, 0.025), 1: (-0.05, 0.05), 2: (-0.05, 0.05)},
             },
@@ -237,6 +238,11 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
         "joint_limit": RewardTermCfg(func=base_mdp.joint_pos_limits, weight=a.joint_limit_weight, params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))}),
     }
 
+    from supermimic.envs.mdp.rewards import simulator_reward_term
+    for name, term in rewards.items():
+        term.func=simulator_reward_term
+        term.params={"term": name, "weight": term.weight}
+
     # ---------------------------------------------------------------- terminations
     terminations = {
         "time_out": TerminationTermCfg(func=base_mdp.time_out, time_out=True),
@@ -254,7 +260,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
 
     recorders = {}
     if a.record_transitions:
-        recorders["replay"] = ReplayRecorderCfg(params={"capacity": a.replay_capacity, "foot_geom_regex": foot_geom_regex, "com_body_name": anchor_body})
+        recorders["replay"] = ReplayRecorderCfg(params={"capacity": a.replay_capacity, "foot_geom_regex": foot_geom_regex, "com_body_name": physical_com_body})
 
     cfg = ManagerBasedRlEnvCfg(
         scene=SceneCfg(terrain=TerrainEntityCfg(terrain_type="plane"), num_envs=a.num_envs, entities={"robot": robot_cfg}),

@@ -126,3 +126,39 @@ def tracking_reward_terms(
             total = total + v
     terms["total"] = total
     return terms
+
+def simulator_heads(env):
+    """Shared analytic FK on post-integration qpos, avoiding stale mj_step derived poses."""
+    if not hasattr(env, "_parity_heads"):
+        from supermimic.kinematics.g1_fk import G1Kinematics
+        from supermimic.world_model.heads import AnalyticHeads
+        cmd=env.command_manager.get_term("motion")
+        robot=env.scene["robot"]
+        # Use the unmerged robot model: scene origins must not enter analytic FK.
+        if cmd.cfg.robot_variant == "p2":
+            from supermimic.envs.p2 import load_p2_model
+            model=load_p2_model()
+        else:
+            from supermimic.data.motion_convert import load_g1_model
+            model=load_g1_model()
+        env._parity_heads=AnalyticHeads(G1Kinematics(model,device=env.device),
+            cmd.cfg.body_names,"pelvis","pelvis",robot.data.soft_joint_pos_limits[0],
+            robot.data.default_joint_pos[0])
+    return env._parity_heads
+
+def next_reference(env):
+    from supermimic.world_model.wm_trainer import reference_at
+    cmd=env.command_manager.get_term("motion")
+    return reference_at(cmd.library,torch.minimum(cmd.frame+1,cmd.library.last_frame_of(cmd.frame)))
+
+def simulator_reward_term(env, term, weight):
+    from supermimic.envs.state_io import StateIO
+    heads=simulator_heads(env)
+    terms=heads.reward(StateIO(env).read(),env.action_manager.action,
+                       env.action_manager.prev_action,next_reference(env))
+    return terms[term]/(weight*env.step_dt)
+
+def simulator_termination_error(env):
+    from supermimic.envs.state_io import StateIO
+    s=StateIO(env).read()
+    return simulator_heads(env).termination_features(s[:,:3],s[:,3:7],next_reference(env))
