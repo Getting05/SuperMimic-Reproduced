@@ -79,7 +79,15 @@ class SuperMimicEnvCfgArgs:
     obs_noise: bool = True
     reset_noise: bool = True
     domain_randomization: bool = True
-    sampling_mode: str = "return"  # return | uniform | start
+    sampling_mode: str = "return"
+    sgs_target: float = 0.66
+    sgs_kappa: float = 5.0
+    sgs_temperature: float = 2.0
+    sgs_eps: float = 1e-8
+    sgs_history: int = 100
+    sgs_eval_steps: int = 50
+    sgs_root_pos_threshold: float = 0.15
+    sgs_body_pos_threshold: float = 0.15  # return | uniform | start | sgs
     replay_capacity: int = 1000
     record_transitions: bool = True
     seed: int | None = 0
@@ -92,7 +100,7 @@ class SuperMimicEnvCfgArgs:
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     robot: str = "g1"
-    p2_advanced_actuators: bool = True
+    p2_advanced_actuators: bool = False
     extra_command_kwargs: dict = field(default_factory=dict)
 
 
@@ -166,6 +174,14 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             velocity_range=vel_range if a.reset_noise else {},
             joint_position_range=(-0.1, 0.1) if a.reset_noise else (0.0, 0.0),
             sampling_mode=a.sampling_mode,  # type: ignore[arg-type]
+            sgs_target=a.sgs_target,
+            sgs_kappa=a.sgs_kappa,
+            sgs_temperature=a.sgs_temperature,
+            sgs_eps=a.sgs_eps,
+            sgs_history=a.sgs_history,
+            sgs_eval_steps=a.sgs_eval_steps,
+            sgs_root_pos_threshold=a.sgs_root_pos_threshold,
+            sgs_body_pos_threshold=a.sgs_body_pos_threshold,
             compact_library=a.compact_library,
             library_device=a.library_device,
             robot_variant=a.robot,
@@ -233,6 +249,13 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
         "root_height": TerminationTermCfg(func=sm_term.bad_root_height, params={"command_name": "motion", "threshold": a.root_height_threshold}),
         "root_tilt": TerminationTermCfg(func=sm_term.bad_root_tilt, params={"command_name": "motion", "threshold": a.root_tilt_threshold}),
     }
+
+    if a.sampling_mode == "sgs":
+        terminations["sgs_horizon"] = TerminationTermCfg(
+            func=sm_term.sgs_horizon, params={"command_name": "motion"}, time_out=True,
+        )
+        if a.episode_length_s < a.sgs_eval_steps * 0.02:
+            raise ValueError("episode_length_s must allow the complete SGS horizon")
 
     recorders = {}
     if a.record_transitions:
