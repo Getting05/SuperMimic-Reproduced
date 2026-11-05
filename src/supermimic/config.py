@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from supermimic.eval.config import AutoEvalCfg
 from pathlib import Path
 from typing import Literal
 
@@ -83,3 +85,4 @@ class TrainConfig:
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
     wandb: WandbCfg = field(default_factory=WandbCfg)
     resume: Path | None = None
+    evaluation: AutoEvalCfg = field(default_factory=AutoEvalCfg)

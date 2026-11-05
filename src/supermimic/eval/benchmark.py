@@ -35,11 +35,12 @@ class ClipResult:
 
 
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
-    ck = torch.load(path, map_location=device, weights_only=False)
+    # Load optimizer/WM payloads on CPU; only the inference policy goes to GPU.
+    ck = torch.load(path, map_location="cpu", weights_only=False)
     if ck.get("format_version") != "vibed-parity-state71-v1":
         raise ValueError("Old or incompatible checkpoint: explicit Vibed parity checkpoint required")
     pc = dict(ck["config"]["policy"])
-    # Older 99D parity and fixed-93D checkpoints predate the explicit switch.
+    # Older parity checkpoints predate the explicit 93D/99D switch.
     pc.setdefault("policy_obs_ref_rot6d", ck["policy"]["obs_norm.mean"].numel() == 99)
     pcfg = PolicyCfg(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in pc.items()})
     policy = Policy(pcfg).to(device)
@@ -152,26 +153,37 @@ def termination_reason(env,e):
     return "+".join(causes) or "hard_termination"
 
 
-def state_metrics(env):
+def state_metrics(env, selected=None):
     from supermimic.envs.state_io import StateIO
     from supermimic.envs.mdp.rewards import simulator_heads,reanchor_reference
     from supermimic.world_model.wm_trainer import reference_at
     from supermimic.kinematics.rotations import quat_error_magnitude
+    from supermimic.eval.config import METRICS
+    selected = list(METRICS) if selected is None else selected
+    if not selected:
+        return {}
+    if set(selected) - METRICS.keys():
+        raise ValueError("Unknown state metric")
     s=StateIO(env).read()
     cmd=env.command_manager.get_term("motion")
-    ref=reference_at(cmd.library,cmd.frame)
     r=cmd.library.ref(cmd.frame)
-    b=simulator_heads(env).robot_bodies(s)
-    rp,rq=reanchor_reference(ref.body_pos_w,ref.body_quat_w,ref.root_pos_w,
-        ref.root_quat_w,s[:,:3],s[:,3:7])
-    return dict(pelvis_position=(s[:,:3]-ref.root_pos_w).norm(dim=-1),
-        pelvis_orientation=quat_error_magnitude(s[:,3:7],ref.root_quat_w),
-        body_position_world=(b["pos"]-ref.body_pos_w).norm(dim=-1).mean(-1),
-        body_orientation_world=quat_error_magnitude(b["quat"],ref.body_quat_w).mean(-1),
-        body_position_reanchored=(b["pos"]-rp).norm(dim=-1).mean(-1),
-        body_orientation_reanchored=quat_error_magnitude(b["quat"],rq).mean(-1),
-        joint_position=(s[:,13:42]-r.joint_pos).abs().mean(-1),
-        joint_velocity=(s[:,42:71]-r.joint_vel).abs().mean(-1))
+    ref=reference_at(cmd.library,cmd.frame) if any(k.startswith("body_") for k in selected) else r
+    b = simulator_heads(env).robot_bodies(s) if any(k.startswith("body_") for k in selected) else None
+    if any("reanchored" in k for k in selected):
+        rp,rq=reanchor_reference(ref.body_pos_w,ref.body_quat_w,ref.root_pos_w,
+            ref.root_quat_w,s[:,:3],s[:,3:7])
+    functions = {
+        "pelvis_position": lambda: (s[:,:3]-ref.root_pos_w).norm(dim=-1),
+        "pelvis_orientation": lambda: quat_error_magnitude(s[:,3:7],ref.root_quat_w),
+        "body_position_world": lambda: (b["pos"]-ref.body_pos_w).norm(dim=-1).mean(-1),
+        "body_orientation_world": lambda: quat_error_magnitude(b["quat"],ref.body_quat_w).mean(-1),
+        "body_position_reanchored": lambda: (b["pos"]-rp).norm(dim=-1).mean(-1),
+        "body_orientation_reanchored": lambda: quat_error_magnitude(b["quat"],rq).mean(-1),
+        "body_position_root_relative": lambda: ((b["pos"]-s[:,None,:3])-(ref.body_pos_w-ref.root_pos_w[:,None,:])).norm(dim=-1).mean(-1),
+        "joint_position": lambda: (s[:,13:42]-r.joint_pos).abs().mean(-1),
+        "joint_velocity": lambda: (s[:,42:71]-r.joint_vel).abs().mean(-1),
+    }
+    return {name: functions[name]() for name in selected}
 
 
 def summarize(results: list[ClipResult]) -> dict:

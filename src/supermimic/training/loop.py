@@ -270,7 +270,16 @@ class Trainer:
 
     def run(self) -> None:
         self.wandb_run = None
+        self._auto_eval = None
+        self._final_eval_checkpoint = None
+        if self.cfg.evaluation.enabled and self.is_main:
+            from supermimic.eval.automatic import AutoEvaluator
+            self._auto_eval = AutoEvaluator(self.cfg.evaluation, self.log_dir)
         try:
+            if self.cfg.evaluation.enabled and self.cfg.evaluation.on_start:
+                self.save("ckpt_eval_initial.pt")
+                if self._auto_eval is not None:
+                    self._auto_eval.submit(self.log_dir / "ckpt_eval_initial.pt")
             if self.is_main and self.cfg.wandb.enabled:
                 import wandb
                 self.wandb_run = wandb.init(project=self.cfg.wandb.project, entity=self.cfg.wandb.entity,
@@ -278,6 +287,11 @@ class Trainer:
                                            config=json.loads(json.dumps(asdict(self.cfg), default=str)))
             self._run()
         finally:
+            if self._auto_eval is not None:
+                self._auto_eval.finish()
+                if self._final_eval_checkpoint is not None:
+                    self._auto_eval.submit(self._final_eval_checkpoint)
+                    self._auto_eval.finish()
             if self.writer is not None:
                 self.writer.close()
             if self.wandb_run is not None:
@@ -437,6 +451,16 @@ class Trainer:
             if self.iteration % sch.checkpoint_interval == 0:
                 self.save("ckpt_latest.pt")
                 self.save(f"ckpt_{self.iteration:07d}.pt")
+            if cfg.evaluation.enabled:
+                if self._auto_eval is not None:
+                    self._auto_eval.poll()
+                if self.iteration % cfg.evaluation.interval == 0:
+                    # All ranks participate in save(), even though only rank 0
+                    # launches evaluation. Each job receives an immutable file.
+                    name = f"ckpt_eval_{self.iteration:07d}.pt"
+                    self.save(name)
+                    if self._auto_eval is not None:
+                        self._auto_eval.submit(self.log_dir / name)
             if sch.max_hours is not None and self.iteration % sch.log_interval == 0:
                 stop = float((time.time() - t_start) / 3600 > sch.max_hours)
                 if self.world > 1:
@@ -446,6 +470,10 @@ class Trainer:
                         print("[INFO] max_hours reached, stopping")
                     break
         self.save("ckpt_latest.pt")
+        if cfg.evaluation.enabled and cfg.evaluation.on_finish:
+            name = f"ckpt_eval_final_{self.iteration:07d}.pt"
+            self.save(name)
+            self._final_eval_checkpoint = self.log_dir / name
         if self.writer is not None:
             self.writer.flush()
         finalize()
