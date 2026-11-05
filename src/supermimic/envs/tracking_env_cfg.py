@@ -239,9 +239,10 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     }
 
     from supermimic.envs.mdp.rewards import simulator_reward_term
+    first_reward = next(name for name, term in rewards.items() if term.weight != 0.0)
     for name, term in rewards.items():
-        term.func=simulator_reward_term
-        term.params={"term": name, "weight": term.weight}
+        term.func = simulator_reward_term
+        term.params = {"term": name, "weight": term.weight, "reuse": name != first_reward}
 
     # ---------------------------------------------------------------- terminations
     terminations = {

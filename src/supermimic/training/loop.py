@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 import os
-import uuid
 import random
 import numpy as np
 
@@ -152,17 +151,20 @@ class Trainer:
     # ------------------------------------------------------------------ checkpoints
 
     def save(self, name: str = "ckpt_latest.pt") -> None:
-        generation=[uuid.uuid4().hex if self.is_main else None]
-        if self.world>1:dist.broadcast_object_list(generation,src=0)
-        rank_files=[f"{name}.{generation[0]}.rank{rank}.state.pt" for rank in range(self.world)]
         rank_state=dict(cpu_rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state(self.device),
                         numpy_rng=np.random.get_state(),python_rng=random.getstate(),
                         utd_acc=self._utd_acc)
         if self.command.sgs_sampler is not None:
             rank_state["sampler"]=self.command.sgs_state_dict()
-        self._atomic_save(rank_state,self.log_dir/rank_files[self.rank])
-        if self.world>1:dist.barrier()
-        sampler_files=None
+        else:
+            rank_state["bin_return"]=self.command.bin_return
+            rank_state["bin_memory"]=self.command.bin_memory
+        rank_state = self._checkpoint_cpu_state(rank_state)
+        rank_states = [None] * self.world if self.is_main else None
+        if self.world > 1:
+            dist.gather_object(rank_state, rank_states, dst=0)
+        else:
+            rank_states = [rank_state]
         if not self.is_main:
             return
         self._atomic_save(
@@ -182,11 +184,23 @@ class Trainer:
                 "bin_return": self.command.bin_return,
                 "bin_memory": self.command.bin_memory,
                 "config": asdict(self.cfg),
-                "sgs_rank_files": sampler_files,
-                "rank_files": rank_files,
+                "rank_states": rank_states,
+                "checkpoint_layout": "single-file-rank-states-v1",
             },
             self.log_dir / name,
         )
+
+    @staticmethod
+    def _checkpoint_cpu_state(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {k: Trainer._checkpoint_cpu_state(v) for k, v in value.items()}
+        if isinstance(value, tuple):
+            return tuple(Trainer._checkpoint_cpu_state(v) for v in value)
+        if isinstance(value, list):
+            return [Trainer._checkpoint_cpu_state(v) for v in value]
+        return value
 
     @staticmethod
     def _atomic_save(state, path):
@@ -211,9 +225,14 @@ class Trainer:
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
-        files=ck.get("rank_files",[])
-        if len(files)!=self.world:raise ValueError("Resume requires matching world size and rank files")
-        state=torch.load(Path(path).parent/files[self.rank],map_location="cpu",weights_only=False)
+        if "rank_states" in ck:
+            if len(ck["rank_states"]) != self.world:
+                raise ValueError("Full-state resume requires matching world size")
+            state = self._checkpoint_cpu_state(ck["rank_states"][self.rank])
+        else:
+            files=ck.get("rank_files",[])
+            if len(files)!=self.world:raise ValueError("Resume requires matching world size and rank files")
+            state=torch.load(Path(path).parent/files[self.rank],map_location="cpu",weights_only=False)
         if self.command.sgs_sampler is not None:
             self.command.load_sgs_state_dict(state["sampler"])
         torch.set_rng_state(state["cpu_rng"])
@@ -224,8 +243,17 @@ class Trainer:
         self.policy_trainer.opt.load_state_dict(ck["policy_opt"])
         self.policy_trainer.critic_opt.load_state_dict(ck["critic_opt"])
         if self.command.sgs_sampler is None:
-            self.command.bin_return.copy_(ck["bin_return"])
-            self.command.bin_memory.copy_(ck["bin_memory"])
+            if "bin_return" in state:
+                sampler_state = state
+            elif self.rank == 0:
+                sampler_state = ck
+            else:
+                raise ValueError("Legacy checkpoint lacks this rank's return-sampler statistics")
+            for key in ("bin_return", "bin_memory"):
+                target = getattr(self.command, key)
+                if target.shape != sampler_state[key].shape:
+                    raise ValueError(f"Checkpoint {key} does not match this rank's data shard")
+                target.copy_(sampler_state[key])
         self.iteration = ck["iteration"]
         self.start_iteration = self.iteration
         self.num_updates = ck["num_updates"]

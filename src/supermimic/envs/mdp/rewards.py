@@ -146,19 +146,31 @@ def simulator_heads(env):
             robot.data.default_joint_pos[0])
     return env._parity_heads
 
-def next_reference(env):
+def next_reference(env, *, bodies=True):
     from supermimic.world_model.wm_trainer import reference_at
     cmd=env.command_manager.get_term("motion")
-    return reference_at(cmd.library,torch.minimum(cmd.frame+1,cmd.library.last_frame_of(cmd.frame)))
+    frame = torch.minimum(cmd.frame + 1, cmd.library.last_frame_of(cmd.frame))
+    if bodies:
+        return reference_at(cmd.library, frame)
+    from supermimic.world_model.heads import ReferenceFrame
+    ref = cmd.library.ref(frame)
+    return ReferenceFrame(None, None, None, None, ref.root_pos_w, ref.root_quat_w)
 
-def simulator_reward_term(env, term, weight):
+def simulator_reward_term(env, term, weight, reuse=False):
     from supermimic.envs.state_io import StateIO
-    heads=simulator_heads(env)
-    terms=heads.reward(StateIO(env).read(),env.action_manager.action,
-                       env.action_manager.prev_action,next_reference(env))
-    return terms[term]/(weight*env.step_dt)
+    # RewardManager visits terms in insertion order. The first nonzero term
+    # refreshes the cache on EVERY compute() call, including repeated calls or
+    # manual resets in the same simulator step. Later terms only read it.
+    step = getattr(env, "common_step_counter", None)
+    if not reuse or getattr(env, "_parity_reward_step", None) != step or not hasattr(env, "_parity_reward_terms"):
+        heads = simulator_heads(env)
+        env._parity_reward_terms = heads.reward(
+            StateIO(env).read(), env.action_manager.action,
+            env.action_manager.prev_action, next_reference(env))
+        env._parity_reward_step = step
+    return env._parity_reward_terms[term] / (weight * env.step_dt)
 
 def simulator_termination_error(env):
     from supermimic.envs.state_io import StateIO
     s=StateIO(env).read()
-    return simulator_heads(env).termination_features(s[:,:3],s[:,3:7],next_reference(env))
+    return simulator_heads(env).termination_features(s[:,:3],s[:,3:7],next_reference(env, bodies=False))

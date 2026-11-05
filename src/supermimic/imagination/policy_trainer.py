@@ -79,8 +79,10 @@ class PolicyTrainer:
         H1,n,_=ro.states.shape
         state=ro.states.flatten(0,1)
         frame=ro.frames.flatten()
-        x=self.wm.heads.critic_features(state,reference_at(self.lib,frame),
-            xi[None].expand(H1,n,-1).reshape(-1,33),self.wm.spec)
+        ref = ro.reference if ro.reference is not None else reference_at(self.lib, frame)
+        body_pos = ro.body_pos.flatten(0, 1) if ro.body_pos is not None else None
+        x=self.wm.heads.critic_features(state,ref,
+            xi[None].expand(H1,n,-1).reshape(-1,33),self.wm.spec,body_pos=body_pos)
         # Insert the privileged joint-position error after invariant71.
         dq=self.lib.ref(frame).joint_pos-state[:,13:42]
         feat=torch.cat((x[:,:71],dq,x[:,71:]),-1).reshape(H1,n,184)

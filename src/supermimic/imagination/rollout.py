@@ -30,6 +30,8 @@ class ImagRollout:
     e_root: torch.Tensor  # (H+1, n, 4)
     frames: torch.Tensor  # (H+1, n)
     reward_terms: dict  # mean of each reward term over the rollout (diagnostics)
+    reference: ReferenceFrame | None = None
+    body_pos: torch.Tensor | None = None
 
 
 def imagine(
@@ -91,8 +93,9 @@ def imagine(
         return ReferenceFrame(ref_all.body_pos_w[sl], ref_all.body_quat_w[sl], ref_all.body_lin_vel_w[sl], ref_all.body_ang_vel_w[sl], ref_all.root_pos_w[sl], ref_all.root_quat_w[sl])
 
     ref = ref_at(0)
+    b0 = wm.heads.robot_bodies(s)
+    body_positions = [b0["pos"]]
     if anchor_obs:
-        b0 = wm.heads.robot_bodies(s)
         anchor_pose = torch.cat([b0["pos"][..., ai, :], b0["quat"][..., ai, :]], dim=-1)
     else:
         anchor_pose = None
@@ -103,7 +106,9 @@ def imagine(
     for t in range(horizon):
         obs_flat = flatten_history_term_major(torch.stack(hist, 0))
         a = policy(obs_flat, goals[-1])
-        s_next, r, term_vec, d, obs_clean, anchor_pose = step_fn(s, a, a_prev, start.xi, ref_at(t + 1))
+        s_next, r, term_vec, d, obs_clean, anchor_pose, body_pos = step_fn(
+            s, a, a_prev, start.xi, ref_at(t + 1), return_body_pos=True)
+        body_positions.append(body_pos)
         c = c * (1.0 - d)
         term_sum += term_vec.detach().mean(-1)
 
@@ -131,4 +136,6 @@ def imagine(
         e_root=torch.stack(e_roots),
         frames=torch.stack(frames),
         reward_terms={k: float(v / horizon) for k, v in zip(REWARD_TERM_NAMES, term_sum.tolist())},
+        reference=ref_all,
+        body_pos=torch.stack(body_positions),
     )

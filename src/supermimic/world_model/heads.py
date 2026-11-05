@@ -144,14 +144,14 @@ class AnalyticHeads:
         alive=(1-torch.sigmoid((errors[...,0]-.25)/tz))*(1-torch.sigmoid((errors[...,1]-.8)/tt))
         return 1-alive
 
-    def critic_features(self,s,ref,xi,spec):
+    def critic_features(self,s,ref,xi,spec,body_pos=None):
         from supermimic.envs.mdp.rewards import reanchor_reference
         from supermimic.kinematics.rotations import yaw_quat,rot6d_from_quat,quat_inv,quat_mul
-        body=self.robot_bodies(s)
+        body_pos = self.robot_bodies(s)["pos"] if body_pos is None else body_pos
         rp,_=reanchor_reference(ref.body_pos_w,ref.body_quat_w,ref.root_pos_w,
             ref.root_quat_w,s[...,:3],s[...,3:7])
         h=yaw_quat(s[...,3:7])
-        eb=quat_apply_inverse(h[...,None,:].expand(*rp.shape[:-1],4),rp-body["pos"]).flatten(-2)
+        eb=quat_apply_inverse(h[...,None,:].expand(*rp.shape[:-1],4),rp-body_pos).flatten(-2)
         # Reference joint positions are supplied by the caller.
         return torch.cat((spec.canonical(s),eb,
             quat_apply_inverse(h,ref.root_pos_w-s[...,:3]),
