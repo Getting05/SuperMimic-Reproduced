@@ -97,6 +97,7 @@ class SuperMimicEnvCfgArgs:
     bin_frames: int = 50
     library_device: str = "gpu"
     compact_library: bool = False
+    policy_obs_ref_rot6d: bool = False
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
     robot: str = "g1"
@@ -117,7 +118,8 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
     # ---------------------------------------------------------------- observations
     noise = (lambda lo, hi: Unoise(n_min=lo, n_max=hi)) if a.obs_noise else (lambda lo, hi: None)
     policy_terms = {"frame": ObservationTermCfg(
-        func=sm_obs.policy_frame_noisy if a.obs_noise else sm_obs.policy_frame)}
+        func=sm_obs.policy_frame_noisy if a.obs_noise else sm_obs.policy_frame,
+        params={"include_ref_rot6d": a.policy_obs_ref_rot6d})}
     observations = {
         "policy": ObservationGroupCfg(
             terms=policy_terms,

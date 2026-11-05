@@ -14,7 +14,7 @@ def test_norm_moments_and_checkpoint():
     torch.testing.assert_close(m(x),n(x))
 
 def test_fsq_elu_dims_grad():
-    p=Policy(PolicyCfg(fsq=True,encoder_hidden=(32,),decoder_hidden=(32,)))
+    p=Policy(PolicyCfg(policy_obs_ref_rot6d=True,fsq=True,encoder_hidden=(32,),decoder_hidden=(32,)))
     x=torch.randn(3,730,requires_grad=True)
     z=p.encoders["motion"](x)
     assert z.shape==(3,40) and torch.equal(z,z.round()) and z.abs().max()<=4

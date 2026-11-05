@@ -24,6 +24,7 @@ class PolicyCfg:
     latent_dim: int = LATENT_DIM
     fsq: bool = True
     history: int = 10
+    policy_obs_ref_rot6d: bool = False
     # Fixed per-term observation scales (divide): joint_pos, joint_vel, base_ang_vel, projected_gravity, actions.
     obs_term_scale: tuple[float, ...] = (1.0, 5.0, 2.0, 1.0, 1.0)
     # Fixed goal feature scales: joint_pos 29, joint_vel 29, grav 3, ang_vel_b 3, lin_vel_h 3, height 1.
@@ -38,7 +39,7 @@ class CriticCfg:
 
 
 def _obs_scale_vector(cfg: PolicyCfg) -> torch.Tensor:
-    return torch.ones(cfg.history * 99)
+    return torch.ones(cfg.history * (99 if cfg.policy_obs_ref_rot6d else 93))
 
 def _goal_scale_vector(cfg: PolicyCfg, goal_dim: int) -> torch.Tensor:
     return torch.ones(goal_dim)
@@ -62,8 +63,9 @@ class MotionEncoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, cfg: PolicyCfg, obs_dim: int = 990):
+    def __init__(self, cfg: PolicyCfg, obs_dim: int | None = None):
         super().__init__()
+        obs_dim = obs_dim if obs_dim is not None else cfg.history * (99 if cfg.policy_obs_ref_rot6d else 93)
         self.mlp = MLP((FSQ_DIM if cfg.fsq else cfg.latent_dim) + obs_dim, cfg.decoder_hidden, ACT_DIM, last_gain=cfg.decoder_last_gain, act=nn.ELU)
         self.register_buffer("scale", _obs_scale_vector(cfg))
 
@@ -81,11 +83,12 @@ class Policy(nn.Module):
         self.cfg = cfg
         self.encoders = nn.ModuleDict({"motion": MotionEncoder(cfg)})
         self.decoder = Decoder(cfg)
-        self.obs_norm=RunningNorm(99)
+        self.obs_dim = 99 if cfg.policy_obs_ref_rot6d else 93
+        self.obs_norm=RunningNorm(self.obs_dim)
         self.goal_norm=RunningNorm(cfg.goal_dim)
 
     def forward(self, obs_hist: torch.Tensor, goal: torch.Tensor, interface: str = "motion") -> torch.Tensor:
-        obs_hist=self.obs_norm(obs_hist.reshape(obs_hist.shape[0],self.cfg.history,99)).flatten(1)
+        obs_hist=self.obs_norm(obs_hist.reshape(obs_hist.shape[0],self.cfg.history,self.obs_dim)).flatten(1)
         return self.decoder(self.encoders[interface](self.goal_norm(goal)), obs_hist)
 
 

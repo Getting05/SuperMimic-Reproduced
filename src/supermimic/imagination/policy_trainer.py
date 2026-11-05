@@ -66,7 +66,7 @@ class PolicyTrainer:
         self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
         from supermimic.imagination.compiled import ImagStep
 
-        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
+        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile, include_ref_rot6d=policy.cfg.policy_obs_ref_rot6d)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:

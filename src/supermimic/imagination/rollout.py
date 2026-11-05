@@ -48,8 +48,8 @@ def imagine(
     device = start.state.device
     n = start.state.shape[0]
     q0 = lib.default_joint_pos
-    step_fn = step_fn or ImagStep(wm, q0)
-    noise_half = OBS_NOISE_HALF.to(device)
+    step_fn = step_fn or ImagStep(wm, q0, include_ref_rot6d=policy.cfg.policy_obs_ref_rot6d)
+    noise_half = OBS_NOISE_HALF[:policy.obs_dim].to(device)
     anchor_noise_half = ANCHOR_NOISE_HALF.to(device)
     ai = wm.heads.anchor_index
 
@@ -69,7 +69,7 @@ def imagine(
 
     # Initial observation history from the logged states/actions (noise re-sampled per frame).
     hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i],
-        start.hist_xi[i], q0, lib.ref(start.hist_frames[i]).root_quat_w))
+        start.hist_xi[i], q0, lib.ref(start.hist_frames[i]).root_quat_w, policy.cfg.policy_obs_ref_rot6d))
         for i in range(start.hist_states.shape[0])]
 
     s = start.state

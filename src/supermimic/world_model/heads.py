@@ -28,7 +28,7 @@ def split_state(s: torch.Tensor):
 
 
 def analytic_observation(
-    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor, ref_quat: torch.Tensor
+    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor, ref_quat: torch.Tensor, include_ref_rot6d: bool = True
 ) -> torch.Tensor:
     """Noise-free 99-d proprioceptive observation (paper Table A.1) from state + context.
 
@@ -36,9 +36,12 @@ def analytic_observation(
     """
     _, root_quat, q, _, ang_b, qd = split_state(s)
     bias = xi[..., 1:30]
+    proprio = torch.cat([q - bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action], dim=-1)
+    if not include_ref_rot6d:
+        return proprio
     from supermimic.kinematics.rotations import quat_inv, quat_mul, rot6d_from_quat
     rel = rot6d_from_quat(quat_mul(quat_inv(root_quat),ref_quat))
-    return torch.cat([q - bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action, rel], dim=-1)
+    return torch.cat([proprio, rel], dim=-1)
 
 
 def anchor_relative_obs(robot_anchor_pos: torch.Tensor, robot_anchor_quat: torch.Tensor, ref_anchor_pos: torch.Tensor, ref_anchor_quat: torch.Tensor) -> torch.Tensor:

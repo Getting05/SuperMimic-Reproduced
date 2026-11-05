@@ -26,7 +26,8 @@ REWARD_TERM_NAMES = (
 
 
 class ImagStep:
-    def __init__(self, wm: WorldModel, default_joint_pos: torch.Tensor, compile_mode: str | None = None):
+    def __init__(self, wm: WorldModel, default_joint_pos: torch.Tensor, compile_mode: str | None = None, include_ref_rot6d: bool = True):
+        self.include_ref_rot6d = include_ref_rot6d
         self.wm = wm
         self.q0 = default_joint_pos
         self._fn = self._heads
@@ -46,7 +47,7 @@ class ImagStep:
             ref_body_lin, ref_body_ang, ref_root_pos, ref_root_quat)
         # Keep the policy feedback observation on its original eager path too:
         # tiny geometry roundoff must not feed back into the BF16 WM rollout.
-        obs = analytic_observation(s_next, a, xi, self.q0, ref_root_quat)
+        obs = analytic_observation(s_next, a, xi, self.q0, ref_root_quat, self.include_ref_rot6d)
         return state, r, terms, termination, obs, anchor, bodies
 
     def _heads(self, s_next, a, a_prev, xi, ref_body_pos, ref_body_quat, ref_body_lin, ref_body_ang, ref_root_pos, ref_root_quat):

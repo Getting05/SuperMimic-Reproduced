@@ -106,6 +106,7 @@ class Trainer:
                 compact_library=cfg.env.compact_library,
                 library_device=cfg.data.library_device,
                 anchor_obs=cfg.env.anchor_obs,
+                policy_obs_ref_rot6d=cfg.policy.policy_obs_ref_rot6d,
                 seed=cfg.seed + 1000 * self.rank,
             ),
             device=self.device,
@@ -263,7 +264,7 @@ class Trainer:
 
     @torch.no_grad()
     def act(self, obs) -> torch.Tensor:
-        self.policy.obs_norm.update(obs["policy"].reshape(-1,self.cfg.policy.history,99)[:,-1])
+        self.policy.obs_norm.update(obs["policy"].reshape(-1,self.cfg.policy.history,self.policy.obs_dim)[:,-1])
         self.policy.goal_norm.update(obs["goal"])
         return self.policy(obs["policy"], obs["goal"])
 

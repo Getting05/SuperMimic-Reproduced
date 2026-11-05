@@ -63,6 +63,7 @@ def main(
         robot=cfg["env"].get("robot", "g1"),
         p2_advanced_actuators=cfg["env"].get("p2_advanced_actuators", False),
         anchor_obs=cfg["env"].get("anchor_obs", False),
+        policy_obs_ref_rot6d=policy.cfg.policy_obs_ref_rot6d,
         debug_vis=ghost,
     )
     env = RslRlVecEnvWrapper(make_env(args, device=device))

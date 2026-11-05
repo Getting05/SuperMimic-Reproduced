@@ -38,7 +38,9 @@ def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, 
     ck = torch.load(path, map_location=device, weights_only=False)
     if ck.get("format_version") != "vibed-parity-state71-v1":
         raise ValueError("Old or incompatible checkpoint: explicit Vibed parity checkpoint required")
-    pc = ck["config"]["policy"]
+    pc = dict(ck["config"]["policy"])
+    # Older 99D parity and fixed-93D checkpoints predate the explicit switch.
+    pc.setdefault("policy_obs_ref_rot6d", ck["policy"]["obs_norm.mean"].numel() == 99)
     pcfg = PolicyCfg(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in pc.items()})
     policy = Policy(pcfg).to(device)
     policy.load_state_dict(ck["policy"])
@@ -62,6 +64,7 @@ def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", 
         record_transitions=False,
         seed=0,
         anchor_obs=anchor_obs,
+        policy_obs_ref_rot6d=policy.cfg.policy_obs_ref_rot6d,
         robot=robot,
         p2_advanced_actuators=p2_advanced_actuators,
     )
