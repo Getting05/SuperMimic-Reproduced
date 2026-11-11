@@ -14,8 +14,8 @@ from supermimic.world_model.heads import ReferenceFrame, analytic_observation, a
 from supermimic.world_model.wm_trainer import reference_at
 from supermimic.world_model.world_model import WorldModel
 
-# Paper Table A.1 sensor noise (uniform half-widths) in the 93-d observation order.
-OBS_NOISE_HALF = torch.tensor([0.01] * 29 + [0.5] * 29 + [0.2] * 3 + [0.05] * 3 + [0.0] * 29)
+# Paper Table A.1 sensor noise (uniform half-widths) in the 99-d observation order.
+OBS_NOISE_HALF = torch.tensor([0.01] * 29 + [0.5] * 29 + [0.2] * 3 + [0.05] * 3 + [0.0] * 29 + [0.05] * 6)
 ANCHOR_NOISE_HALF = torch.tensor([0.25] * 3 + [0.05] * 6)
 
 
@@ -26,10 +26,12 @@ class ImagRollout:
     rewards: torch.Tensor  # (H, n)      r_{t+1}
     dhat: torch.Tensor  # (H+1, n)    predicted termination prob of s_t (d_0 = 0)
     survival: torch.Tensor  # (H+1, n)    c_t
-    goals: torch.Tensor  # (H+1, n, 680)
+    goals: torch.Tensor  # (H+1, n, 730)
     e_root: torch.Tensor  # (H+1, n, 4)
     frames: torch.Tensor  # (H+1, n)
     reward_terms: dict  # mean of each reward term over the rollout (diagnostics)
+    reference: ReferenceFrame | None = None
+    body_pos: torch.Tensor | None = None
 
 
 def imagine(
@@ -46,8 +48,8 @@ def imagine(
     device = start.state.device
     n = start.state.shape[0]
     q0 = lib.default_joint_pos
-    step_fn = step_fn or ImagStep(wm, q0)
-    noise_half = OBS_NOISE_HALF.to(device)
+    step_fn = step_fn or ImagStep(wm, q0, include_ref_rot6d=policy.cfg.policy_obs_ref_rot6d)
+    noise_half = OBS_NOISE_HALF[:policy.obs_dim].to(device)
     anchor_noise_half = ANCHOR_NOISE_HALF.to(device)
     ai = wm.heads.anchor_index
 
@@ -66,7 +68,10 @@ def imagine(
         return torch.cat([g, rel], dim=-1)
 
     # Initial observation history from the logged states/actions (noise re-sampled per frame).
-    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i], start.xi, q0)) for i in range(start.hist_states.shape[0])]
+    hist = [add_noise(analytic_observation(start.hist_states[i], start.hist_actions[i],
+        start.hist_xi[i], q0, lib.ref(start.hist_frames[i]).root_quat_w, policy.cfg.policy_obs_ref_rot6d))
+        for i in range(start.hist_states.shape[0])]
+
     s = start.state
     frame = start.frame.clone()
     a_prev = start.prev_action
@@ -78,6 +83,8 @@ def imagine(
     # All target frames of the rollout are known up front (frame + t, clamped at the clip end):
     # gather / FK the references for every step in one batched call.
     last = lib.last_frame_of(frame)
+    if bool((frame+horizon>last).any()):
+        raise ValueError("Imagination start lacks complete reference horizon")
     frames_all = torch.minimum(frame[None, :] + torch.arange(horizon + 1, device=device)[:, None], last[None, :])  # (H+1, n)
     ref_all = reference_at(lib, frames_all.reshape(-1))
 
@@ -86,8 +93,9 @@ def imagine(
         return ReferenceFrame(ref_all.body_pos_w[sl], ref_all.body_quat_w[sl], ref_all.body_lin_vel_w[sl], ref_all.body_ang_vel_w[sl], ref_all.root_pos_w[sl], ref_all.root_quat_w[sl])
 
     ref = ref_at(0)
+    b0 = wm.heads.robot_bodies(s)
+    body_positions = [b0["pos"]]
     if anchor_obs:
-        b0 = wm.heads.robot_bodies(s)
         anchor_pose = torch.cat([b0["pos"][..., ai, :], b0["quat"][..., ai, :]], dim=-1)
     else:
         anchor_pose = None
@@ -98,8 +106,9 @@ def imagine(
     for t in range(horizon):
         obs_flat = flatten_history_term_major(torch.stack(hist, 0))
         a = policy(obs_flat, goals[-1])
-        s_next, r, term_vec, logits, obs_clean, anchor_pose = step_fn(s, a, a_prev, start.xi, ref)
-        d = torch.sigmoid(logits)
+        s_next, r, term_vec, d, obs_clean, anchor_pose, body_pos = step_fn(
+            s, a, a_prev, start.xi, ref_at(t + 1), return_body_pos=True)
+        body_positions.append(body_pos)
         c = c * (1.0 - d)
         term_sum += term_vec.detach().mean(-1)
 
@@ -127,4 +136,6 @@ def imagine(
         e_root=torch.stack(e_roots),
         frames=torch.stack(frames),
         reward_terms={k: float(v / horizon) for k, v in zip(REWARD_TERM_NAMES, term_sum.tolist())},
+        reference=ref_all,
+        body_pos=torch.stack(body_positions),
     )

@@ -36,7 +36,7 @@ def setup():
     heads = AnalyticHeads(
         fk,
         TRACKED_BODIES,
-        ANCHOR_BODY,
+        "pelvis",
         ROOT_BODY,
         soft_limits=robot.data.soft_joint_pos_limits[0].clone(),
         default_joint_pos=robot.data.default_joint_pos[0].clone(),
@@ -103,17 +103,10 @@ def test_observation_head_matches_env(setup):
         if env.reset_buf.any():
             pytest.skip("an env reset during the short rollout; rerun")  # keeps the test simple and exact
         s = io.read()
-        o = analytic_observation(s, env.action_manager.action, rec.ctx.read(), q0)
+        o = analytic_observation(s, env.action_manager.action, rec.ctx.read(), q0, env.command_manager.get_term("motion").root_quat_w)
         hist.append(o)
         newest = obs["policy"].view(env.num_envs, -1)
-        # Newest frame of each term in the term-major layout.
-        start = 0
-        for name, d in (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29)):
-            block = newest[:, start * 10 : (start + d) * 10].reshape(env.num_envs, 10, d)  # time-major inside a term
-            env_newest = block[:, -1, :]
-            our = o[:, start : start + d]
-            np.testing.assert_allclose(our.cpu().numpy(), env_newest.cpu().numpy(), atol=2e-5, err_msg=name)
-            start += d
+        torch.testing.assert_close(o,newest.reshape(env.num_envs,10,99)[:,-1],atol=2e-5,rtol=1e-5)
     full = flatten_history_term_major(torch.stack(hist[-10:], 0))
     np.testing.assert_allclose(full.cpu().numpy(), obs["policy"].cpu().numpy(), atol=2e-5)
 
@@ -154,10 +147,10 @@ def test_anchor_relative_obs_matches_env():
     torch.backends.cuda.matmul.allow_tf32 = False
     try:
         robot = env.scene["robot"]
-        heads = AnalyticHeads(G1Kinematics(load_g1_model(), device=env.device), TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(G1Kinematics(load_g1_model(), device=env.device), TRACKED_BODIES, "pelvis", ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         io = StateIO(env)
         obs, _ = env.reset()
-        assert obs["goal"].shape == (8, 689)
+        assert obs["goal"].shape == (8, 739)
         cmd = env.command_manager.get_term("motion")
         for _ in range(5):
             obs, *_ = env.step(0.3 * torch.randn(8, 29, device=env.device))
@@ -166,6 +159,6 @@ def test_anchor_relative_obs_matches_env():
             ai = heads.anchor_index
             ref = _ref_from_command(cmd)
             ours = anchor_relative_obs(b["pos"][:, ai], b["quat"][:, ai], ref.body_pos_w[:, ai], ref.body_quat_w[:, ai])
-            np.testing.assert_allclose(ours.cpu().numpy(), obs["goal"][:, 680:].cpu().numpy(), atol=3e-5)
+            np.testing.assert_allclose(ours.cpu().numpy(), obs["goal"][:, 730:].cpu().numpy(), atol=3e-5)
     finally:
         env.close()

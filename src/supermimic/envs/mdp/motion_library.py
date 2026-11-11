@@ -30,7 +30,7 @@ import torch
 
 from supermimic.kinematics.rotations import projected_gravity, quat_apply_inverse, yaw_quat
 
-GOAL_FEAT_DIM = 68
+GOAL_FEAT_DIM = 73
 REF_DIM = 71
 
 
@@ -63,13 +63,6 @@ class RefBodies:
     ang_vel_w: torch.Tensor  # (N,B,3)
 
 
-def goal_features(ref: RefState, default_joint_pos: torch.Tensor) -> torch.Tensor:
-    q = ref.root_quat_w
-    grav = projected_gravity(q)
-    ang_b = quat_apply_inverse(q, ref.root_ang_vel_w)
-    lin_h = quat_apply_inverse(yaw_quat(q), ref.root_lin_vel_w)
-    height = ref.root_pos_w[..., 2:3]
-    return torch.cat([ref.joint_pos - default_joint_pos, ref.joint_vel, grav, ang_b, lin_h, height], dim=-1)
 
 
 class MotionLibrary:
@@ -83,8 +76,13 @@ class MotionLibrary:
         bin_frames: int = 50,
         compact: bool = False,
         store_dtype: torch.dtype = torch.float16,
+        robot_variant: str = "g1",
+        library_device: str = "gpu",
     ):
         self.device = torch.device(device)
+        if library_device not in ("gpu", "cpu"):
+            raise ValueError("library_device must be gpu or cpu")
+        self.storage_device = self.device if library_device == "gpu" else torch.device("cpu")
         self.dtype = dtype
         self.body_names = tuple(body_names)
         self.bin_frames = int(bin_frames)
@@ -97,6 +95,12 @@ class MotionLibrary:
             q0 = torch.as_tensor(np.asarray(default_joint_pos), dtype=dtype, device=self.device).reshape(-1)
         self.default_joint_pos = q0
 
+        p2_joint_names = None
+        if robot_variant == "p2":
+            from supermimic.envs.p2 import P2_JOINT_NAMES
+
+            p2_joint_names = P2_JOINT_NAMES
+
         clips: list[ClipInfo] = []
         start = 0
         body_idx = root_idx = None
@@ -106,20 +110,33 @@ class MotionLibrary:
         if len(npz_files) == 1 and str(npz_files[0]).endswith(".pt"):
             assert compact, "packed .pt libraries are compact-only"
             pack = torch.load(npz_files[0], map_location="cpu", weights_only=False)
-            self._ref = pack["ref"].to(device=self.device, dtype=store_dtype)
+            if p2_joint_names is not None and tuple(pack.get("joint_names", ())) != p2_joint_names:
+                raise ValueError("Packed P2 motions must use the 29 P2 joints in V3 MJCF order")
+            packed_ref = pack["ref"]
+            # Packed motion archives have a distinct, documented on-disk layout.
+            # This is data ingestion, not checkpoint compatibility.
+            layout = pack.get("state_layout", "p_quat_q_v_w_world_qd")
+            if layout == "p_quat_q_v_w_world_qd":
+                packed_ref = torch.cat((packed_ref[..., :7], packed_ref[..., 36:42],
+                                        packed_ref[..., 7:36], packed_ref[..., 42:71]), -1)
+            elif layout != "vibed71":
+                raise ValueError(f"Unknown motion state_layout: {layout}")
+            self._ref = packed_ref.to(device=self.storage_device, dtype=store_dtype)
             clips = [ClipInfo(n, int(st), int(ln)) for n, st, ln in zip(pack["names"], pack["starts"], pack["lengths"])]
             start = int(self._ref.shape[0])
             ref_chunks = None
         for f in (npz_files if ref_chunks is not None else []):
             with np.load(f) as d:
-                if body_idx is None:
+                if p2_joint_names is not None and tuple(d.get("joint_names", ())) != p2_joint_names:
+                    raise ValueError(f"{f}: expected the 29 P2 joints in V3 MJCF order")
+                if body_idx is None or p2_joint_names is not None:
                     names = [str(n) for n in d["body_names"]]
                     body_idx = np.array([names.index(n) for n in self.body_names])
                     root_idx = names.index("pelvis")
                 n = int(d["joint_pos"].shape[0])
                 bp, bq, blv, bav = d["body_pos_w"], d["body_quat_w"], d["body_lin_vel_w"], d["body_ang_vel_w"]
                 ref = np.concatenate(
-                    [bp[:, root_idx], bq[:, root_idx], d["joint_pos"], blv[:, root_idx], bav[:, root_idx], d["joint_vel"]], axis=1
+                    [bp[:, root_idx], bq[:, root_idx], blv[:, root_idx], bav[:, root_idx], d["joint_pos"], d["joint_vel"]], axis=1
                 ).astype(np.float32)
                 ref_chunks.append(ref)
                 if not compact:
@@ -136,21 +153,26 @@ class MotionLibrary:
         if ref_chunks is not None:
             ref_np = np.concatenate(ref_chunks, 0)
             assert ref_np.shape[1] == REF_DIM
-            self._ref = torch.as_tensor(ref_np, device=self.device, dtype=store_dtype if compact else dtype)
+            self._ref = torch.as_tensor(ref_np, device=self.storage_device, dtype=store_dtype if compact else dtype)
             del ref_np, ref_chunks
         if not compact:
-            t = lambda arrs: torch.as_tensor(np.concatenate(arrs, 0), dtype=dtype, device=self.device)  # noqa: E731
+            t = lambda arrs: torch.as_tensor(np.concatenate(arrs, 0), dtype=dtype, device=self.storage_device)  # noqa: E731
             self.body_pos_w = t(body_chunks["pos"])
             self.body_quat_w = t(body_chunks["quat"])
             self.body_lin_vel_w = t(body_chunks["lin"])
             self.body_ang_vel_w = t(body_chunks["ang"])
             del body_chunks
-            self.goal_feat = goal_features(self._split(self._ref), q0)
         else:
             from supermimic.data.motion_convert import load_g1_model
             from supermimic.kinematics.g1_fk import G1Kinematics
 
-            self._fk = G1Kinematics(load_g1_model(), device=self.device, dtype=dtype)
+            if robot_variant == "p2":
+                from supermimic.envs.p2 import load_p2_model
+
+                model = load_p2_model()
+            else:
+                model = load_g1_model()
+            self._fk = G1Kinematics(model, device=self.device, dtype=dtype)
             self._tracked_idx = self._fk.body_indices(self.body_names)
 
         self.clip_start = torch.tensor([c.start for c in clips], device=self.device, dtype=torch.long)
@@ -171,18 +193,26 @@ class MotionLibrary:
 
     @staticmethod
     def _split(r: torch.Tensor) -> RefState:
-        return RefState(r[..., 0:3], r[..., 3:7], r[..., 7:36], r[..., 36:39], r[..., 39:42], r[..., 42:71])
+        return RefState(r[..., 0:3], r[..., 3:7], r[..., 13:42], r[..., 7:10], r[..., 10:13], r[..., 42:71])
+
+    def _gather(self, tensor: torch.Tensor, frame: torch.Tensor) -> torch.Tensor:
+        # CPU mode trades memory for synchronous transfers. The default GPU path
+        # remains a plain gather with no host round trip.
+        return tensor[frame.to(tensor.device)].to(device=self.device, dtype=self.dtype)
 
     def ref(self, frame: torch.Tensor) -> RefState:
-        return self._split(self._ref[frame].to(self.dtype))
+        return self._split(self.ref71(frame))
 
     def ref71(self, frame: torch.Tensor) -> torch.Tensor:
-        return self._ref[frame].to(self.dtype)
+        from supermimic.kinematics.rotations import quat_normalize
+        r=self._gather(self._ref, frame).clone()
+        r[...,3:7]=quat_normalize(r[...,3:7])
+        return r
 
     def bodies(self, frame: torch.Tensor) -> RefBodies:
         """Tracked-body link states (world) at the given frames."""
         if not self.compact:
-            return RefBodies(self.body_pos_w[frame], self.body_quat_w[frame], self.body_lin_vel_w[frame], self.body_ang_vel_w[frame])
+            return RefBodies(self._gather(self.body_pos_w, frame), self._gather(self.body_quat_w, frame), self._gather(self.body_lin_vel_w, frame), self._gather(self.body_ang_vel_w, frame))
         qpos, qvel = self.ref_qpos_qvel(frame)
         with torch.no_grad():
             out = self._fk(qpos, qvel)
@@ -192,27 +222,28 @@ class MotionLibrary:
     # Convenience column accessors (full fp32 copies; prefer ``ref()`` in hot paths).
     @property
     def root_pos_w(self) -> torch.Tensor:
-        return self._ref[:, 0:3].to(self.dtype)
+        return self._ref[:, 0:3].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_quat_w(self) -> torch.Tensor:
-        return self._ref[:, 3:7].to(self.dtype)
+        from supermimic.kinematics.rotations import quat_normalize
+        return quat_normalize(self._ref[:, 3:7].to(device=self.device, dtype=self.dtype))
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self._ref[:, 7:36].to(self.dtype)
+        return self._ref[:, 13:42].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_lin_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 36:39].to(self.dtype)
+        return self._ref[:, 7:10].to(device=self.device, dtype=self.dtype)
 
     @property
     def root_ang_vel_w(self) -> torch.Tensor:
-        return self._ref[:, 39:42].to(self.dtype)
+        return self._ref[:, 10:13].to(device=self.device, dtype=self.dtype)
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        return self._ref[:, 42:71].to(self.dtype)
+        return self._ref[:, 42:71].to(device=self.device, dtype=self.dtype)
 
     # ------------------------------------------------------------------ queries
 
@@ -224,14 +255,22 @@ class MotionLibrary:
         return self.clip_last[self.frame_clip[frame]]
 
     def goal_window(self, frame: torch.Tensor, k: int) -> torch.Tensor:
-        """(N, k*68) goal features of frames frame..frame+k-1, clamped at the clip end."""
-        last = self.last_frame_of(frame)
-        offs = torch.arange(k, device=self.device)
-        idx = torch.minimum(frame[:, None] + offs[None, :], last[:, None])  # (N,k)
-        if not self.compact:
-            return self.goal_feat[idx].reshape(frame.shape[0], k * GOAL_FEAT_DIM)
-        feat = goal_features(self.ref(idx.reshape(-1)), self.default_joint_pos)
-        return feat.reshape(frame.shape[0], k * GOAL_FEAT_DIM)
+        """Future f+1..f+k, relative to current reference heading; pose hold beyond end."""
+        from supermimic.kinematics.rotations import quat_inv, quat_mul, rot6d_from_quat
+        current = self.ref(frame)
+        raw = frame[:, None] + torch.arange(1, k+1, device=self.device)
+        last = self.last_frame_of(frame)[:, None]
+        idx = torch.minimum(raw, last)
+        r = self.ref(idx)
+        h = yaw_quat(current.root_quat_w)[:, None, :].expand(-1,k,-1)
+        valid = (raw <= last)[...,None]
+        feat = torch.cat((
+            quat_apply_inverse(h,r.root_pos_w-current.root_pos_w[:,None]),
+            rot6d_from_quat(quat_mul(quat_inv(h),r.root_quat_w)),
+            quat_apply_inverse(r.root_quat_w,r.root_lin_vel_w)*valid,
+            quat_apply_inverse(r.root_quat_w,r.root_ang_vel_w)*valid,
+            r.joint_pos, .1*r.joint_vel*valid),-1)
+        return feat.reshape(frame.shape[0],k*73)
 
     def ref_qpos_qvel(self, frame: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """MuJoCo-layout reference state: qpos (N,36) and qvel (N,35; root ang vel in body frame)."""
@@ -245,8 +284,8 @@ class MotionLibrary:
         hours = self.num_frames / 50.0 / 3600.0
         mem = self._ref.numel() * self._ref.element_size() / 1e9
         if not self.compact:
-            mem += sum(t.numel() * t.element_size() for t in (self.body_pos_w, self.body_quat_w, self.body_lin_vel_w, self.body_ang_vel_w, self.goal_feat)) / 1e9
-        return f"MotionLibrary({'compact' if self.compact else 'full'}): {self.num_clips} clips, {self.num_frames} frames ({hours:.3f} h @50Hz), {self.num_bins} bins, {mem:.2f} GB on {self.device}"
+            mem += sum(t.numel() * t.element_size() for t in (self.body_pos_w, self.body_quat_w, self.body_lin_vel_w, self.body_ang_vel_w)) / 1e9
+        return f"MotionLibrary({'compact' if self.compact else 'full'}): {self.num_clips} clips, {self.num_frames} frames ({hours:.3f} h @50Hz), {self.num_bins} bins, {mem:.2f} GB on {self.storage_device} (compute {self.device})"
 
 
 def discover_npz(directory: str | Path, limit: int | None = None, names: list[str] | None = None, manifest: str | Path | None = None) -> list[Path]:

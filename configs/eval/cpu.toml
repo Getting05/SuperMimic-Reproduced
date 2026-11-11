@@ -1,0 +1,40 @@
+# Run from the repository root. Replace checkpoint and dataset paths.
+checkpoint = "logs/run/ckpt_latest.pt"
+output_dir = "evals/cpu"
+# checkpoint_config = "logs/run/config.json" # optional contract assertion
+metrics = ["pelvis_position", "pelvis_orientation", "body_position_world", "body_orientation_world", "body_position_reanchored", "body_orientation_reanchored", "body_position_root_relative", "joint_position", "joint_velocity"]
+reward_terms = true
+seed = 0
+actuator_delay = 2
+
+[[datasets]]
+name = "val"
+path = "data/motions/val.pt"
+format = "packed"
+# limit = 256
+# clips = ["walk_001"]
+# clip_list = "data/val_names.txt"
+
+[[datasets]]
+name = "test"
+path = "data/motions/test.pt"
+format = "packed"
+
+[resources]
+device = "cpu"
+workers = 8
+threads_per_worker = 1
+num_envs = 8
+cpu_fraction = 0.20
+# Use ONE selector: cpu_fraction OR cpu_count OR cpu_ids.
+# cpu_count = 32
+# cpu_ids = [96, 97, 98, 99, 100, 101, 102, 103]
+library_device = "cpu"
+
+[quality]
+enabled = false
+min_completion = 0.98
+[quality.max_errors]
+pelvis_position = 0.30
+body_position_root_relative = 0.25
+joint_position = 0.6981317007977318 # radians, 40 degrees

@@ -315,6 +315,37 @@ def convert_csv_to_npz(
     model = model or load_g1_model()
     raw = load_csv(csv_path)
     motion = resample_motion(raw, input_fps, output_fps)
+    _write_motion_npz(out_path, motion, model, G1_JOINT_NAMES, csv_path, input_fps, output_fps)
+    return {
+        "source": str(csv_path),
+        "out": str(out_path),
+        "input_frames": int(raw.shape[0]),
+        "output_frames": motion.num_frames,
+        "duration_s": (motion.num_frames - 1) / output_fps,
+    }
+
+
+def convert_p2_retarget_to_npz(source: Path, out_path: Path) -> None:
+    """Convert a ProtoMotions PyRoki P2 clip, matching joints by name."""
+    from supermimic.envs.p2 import P2_JOINT_NAMES, load_p2_model
+
+    with np.load(source) as data:
+        names = list(data["joint_names"])
+        if len(set(names)) != len(names):
+            raise ValueError(f"{source}: duplicate joint names")
+        order = [names.index(name) for name in P2_JOINT_NAMES]
+        fps = float(data["fps"].item())
+        if not math.isfinite(fps) or fps <= 0:
+            raise ValueError(f"{source}: expected positive source fps")
+        raw = np.concatenate(
+            [data["base_frame_pos"], data["base_frame_wxyz"][:, [1, 2, 3, 0]], data["joint_angles"][:, order]],
+            axis=1,
+        )
+    motion = resample_motion(raw, fps, 50.0)
+    _write_motion_npz(out_path, motion, load_p2_model(), P2_JOINT_NAMES, source, fps, 50.0)
+
+
+def _write_motion_npz(out_path, motion, model, joint_names, source, input_fps, output_fps):
     bodies = forward_kinematics(model, motion)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,15 +358,8 @@ def convert_csv_to_npz(
         body_quat_w=bodies.quat_w.astype(np.float32),
         body_lin_vel_w=bodies.lin_vel_w.astype(np.float32),
         body_ang_vel_w=bodies.ang_vel_w.astype(np.float32),
-        joint_names=np.array(G1_JOINT_NAMES),
+        joint_names=np.array(joint_names),
         body_names=np.array(bodies.body_names),
-        source=np.array(str(csv_path)),
+        source=np.array(str(source)),
         input_fps=np.array([input_fps], dtype=np.float32),
     )
-    return {
-        "source": str(csv_path),
-        "out": str(out_path),
-        "input_frames": int(raw.shape[0]),
-        "output_frames": motion.num_frames,
-        "duration_s": (motion.num_frames - 1) / output_fps,
-    }

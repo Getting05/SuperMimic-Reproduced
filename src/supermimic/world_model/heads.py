@@ -1,7 +1,7 @@
 """Analytic heads of the world model (plan D4): observation, reward, termination.
 
 Everything here is a pure differentiable function of the 71-d simulator state
-``s = [qpos(36) | qvel(35)]`` (root position expressed relative to the env origin,
+``s = [p3, quat4, v_world3, w_world3, q29, qd29]`` (root position expressed relative to the env origin,
 see ``StateIO``), the previous clean action, the sim context ``xi`` and the
 reference frame, so the same code serves the simulator-side tests and the
 imagined rollouts.
@@ -17,26 +17,31 @@ from supermimic.envs.mdp.rewards import TrackingRewardCfg, tracking_reward_terms
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.kinematics.rotations import projected_gravity, quat_apply_inverse
 
-OBS_DIM = 93
+OBS_DIM = 99
 # Term layout of the ``policy`` observation group (order matters: term-major history).
-OBS_TERMS = (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29))
+OBS_TERMS = (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29), ("relative_orientation", 6))
 
 
 def split_state(s: torch.Tensor):
     """-> root_pos (…,3), root_quat (…,4), joint_pos (…,29), root_lin_vel_w (…,3), root_ang_vel_b (…,3), joint_vel (…,29)."""
-    return s[..., 0:3], s[..., 3:7], s[..., 7:36], s[..., 36:39], s[..., 39:42], s[..., 42:71]
+    return s[..., 0:3], s[..., 3:7], s[..., 13:42], s[..., 7:10], quat_apply_inverse(s[..., 3:7], s[..., 10:13]), s[..., 42:71]
 
 
 def analytic_observation(
-    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor
+    s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor, ref_quat: torch.Tensor, include_ref_rot6d: bool = True
 ) -> torch.Tensor:
-    """Noise-free 93-d proprioceptive observation (paper Table A.1) from state + context.
+    """Noise-free 99-d proprioceptive observation (paper Table A.1) from state + context.
 
     xi[..., 1:30] is the encoder bias: observed joint positions are ``q + bias - q0``.
     """
     _, root_quat, q, _, ang_b, qd = split_state(s)
     bias = xi[..., 1:30]
-    return torch.cat([q + bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action], dim=-1)
+    proprio = torch.cat([q - bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action], dim=-1)
+    if not include_ref_rot6d:
+        return proprio
+    from supermimic.kinematics.rotations import quat_inv, quat_mul, rot6d_from_quat
+    rel = rot6d_from_quat(quat_mul(quat_inv(root_quat),ref_quat))
+    return torch.cat([proprio, rel], dim=-1)
 
 
 def anchor_relative_obs(robot_anchor_pos: torch.Tensor, robot_anchor_quat: torch.Tensor, ref_anchor_pos: torch.Tensor, ref_anchor_quat: torch.Tensor) -> torch.Tensor:
@@ -55,14 +60,8 @@ ANCHOR_OBS_DIM = 9
 
 
 def flatten_history_term_major(hist: torch.Tensor) -> torch.Tensor:
-    """(H, N, 93) oldest→newest  ->  (N, 930) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
-    H, N, _ = hist.shape
-    chunks = []
-    start = 0
-    for _, d in OBS_TERMS:
-        chunks.append(hist[:, :, start : start + d].permute(1, 0, 2).reshape(N, H * d))
-        start += d
-    return torch.cat(chunks, dim=-1)
+    """(H, N, 99) oldest→newest  ->  (N, 990) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
+    return hist.permute(1,0,2).flatten(1)
 
 
 @dataclass
@@ -99,7 +98,8 @@ class AnalyticHeads:
         self.reward_cfg = reward_cfg or TrackingRewardCfg()
 
     def robot_bodies(self, s: torch.Tensor) -> dict[str, torch.Tensor]:
-        out = self.fk(s[..., :36], s[..., 36:])
+        from supermimic.envs.state_io import to_native
+        out = self.fk(*to_native(s))
         idx = self.tracked_idx
         return {
             "pos": out["pos"][..., idx, :],
@@ -125,7 +125,7 @@ class AnalyticHeads:
             anchor_index=self.anchor_index,
             action=action,
             prev_action=prev_action,
-            joint_pos=s_next[..., 7:36],
+            joint_pos=s_next[..., 13:42],
             soft_limits=self.soft_limits,
             cfg=self.reward_cfg,
         )
@@ -141,6 +141,25 @@ class AnalyticHeads:
     def terminated(self, s: torch.Tensor, ref: ReferenceFrame, height_thr: float = 0.25, tilt_thr: float = 0.8) -> torch.Tensor:
         f = self.termination_features(s[..., 0:3], s[..., 3:7], ref)  # pelvis == free-joint root
         return (f[..., 0].abs() > height_thr) | (f[..., 1].abs() > tilt_thr)
+
+    def soft_termination(self, s, ref, tz=.02, tt=.04):
+        errors=self.termination_features(s[...,:3],s[...,3:7],ref).abs()
+        alive=(1-torch.sigmoid((errors[...,0]-.25)/tz))*(1-torch.sigmoid((errors[...,1]-.8)/tt))
+        return 1-alive
+
+    def critic_features(self,s,ref,xi,spec,body_pos=None):
+        from supermimic.envs.mdp.rewards import reanchor_reference
+        from supermimic.kinematics.rotations import yaw_quat,rot6d_from_quat,quat_inv,quat_mul
+        body_pos = self.robot_bodies(s)["pos"] if body_pos is None else body_pos
+        rp,_=reanchor_reference(ref.body_pos_w,ref.body_quat_w,ref.root_pos_w,
+            ref.root_quat_w,s[...,:3],s[...,3:7])
+        h=yaw_quat(s[...,3:7])
+        eb=quat_apply_inverse(h[...,None,:].expand(*rp.shape[:-1],4),rp-body_pos).flatten(-2)
+        # Reference joint positions are supplied by the caller.
+        return torch.cat((spec.canonical(s),eb,
+            quat_apply_inverse(h,ref.root_pos_w-s[...,:3]),
+            rot6d_from_quat(quat_mul(quat_inv(s[...,3:7]),ref.root_quat_w)),
+            spec.normalize_xi(xi)),-1)
 
     @staticmethod
     def root_error_features(s: torch.Tensor, ref: ReferenceFrame) -> torch.Tensor:

@@ -1,0 +1,10 @@
+{
+  "source_sha": "0ad10dfb043077fb9c7536169503e74a60a960e4",
+  "reference_sha": "0525a23a2dcfa61f8543f98b84c075fe66d9d286",
+  "protected_files": {
+    "src/supermimic/envs/p2.py": "1fb2152c3f636b380a4f27d7c585451d747a5d53a4847af9a537bfa65ac5919f",
+    "src/supermimic/envs/p2_actuator.py": "c524a799725e6ed395ec37e6288eff88789667aad44e0299b9ddbf06f79faff0",
+    "src/supermimic/assets/astro_p2_deploy_reduced.xml": "afe99f4187bb2a8b74b1dbfee6787726e92e0fe73c64623bf9f8104203f62311",
+    "src/supermimic/assets/p2_deploy_contract.json": "849c544c7b5500878a88429ef9e20aeb84e8f85ed621a9d860e1f313c0e1ee79"
+  }
+}

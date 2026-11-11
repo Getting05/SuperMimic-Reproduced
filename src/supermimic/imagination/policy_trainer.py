@@ -37,6 +37,28 @@ class PolicyTrainerCfg:
     anchor_obs: bool = False  # None | "default" | "reduce-overhead" | "max-autotune-no-cudagraphs"
 
 
+def sample_valid_starts(buffer,lib,batch,hist,horizon):
+    from dataclasses import fields
+    from supermimic.data.replay_buffer import StartBatch
+    if not bool((lib.clip_len>horizon).any()):
+        raise ValueError(f"No clip supports imagination horizon {horizon}")
+    chunks=[];count=0
+    for _ in range(128):
+        candidate=buffer.sample_starts(2*batch,hist)
+        ok=(candidate.frame+horizon<=lib.last_frame_of(candidate.frame)).nonzero().flatten()[:batch-count]
+        if ok.numel():
+            values={}
+            for f in fields(StartBatch):
+                x=getattr(candidate,f.name)
+                values[f.name]=x[:,ok] if f.name.startswith("hist_") else x[ok]
+            chunks.append(values);count+=ok.numel()
+        if count==batch:
+            return StartBatch(**{f.name:torch.cat([c[f.name] for c in chunks],
+                dim=1 if f.name.startswith("hist_") else 0) for f in fields(StartBatch)})
+    raise RuntimeError("Replay contains insufficient valid imagination starts; collect more data")
+
+
+
 class PolicyTrainer:
     def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
@@ -44,7 +66,7 @@ class PolicyTrainer:
         self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr)
         from supermimic.imagination.compiled import ImagStep
 
-        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
+        self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile, include_ref_rot6d=policy.cfg.policy_obs_ref_rot6d)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:
@@ -52,33 +74,43 @@ class PolicyTrainer:
         for g in self.critic_opt.param_groups:
             g["lr"] = lr
 
-    def _critic_inputs(self, ro: ImagRollout):
-        H1, n, _ = ro.states.shape
-        feat = self.wm.spec.canonical(ro.states.reshape(H1 * n, -1)).reshape(H1, n, -1)
-        return feat, ro.goals, ro.e_root
+    def _critic_inputs(self,ro,xi):
+        from supermimic.world_model.wm_trainer import reference_at
+        H1,n,_=ro.states.shape
+        state=ro.states.flatten(0,1)
+        frame=ro.frames.flatten()
+        ref = ro.reference if ro.reference is not None else reference_at(self.lib, frame)
+        body_pos = ro.body_pos.flatten(0, 1) if ro.body_pos is not None else None
+        x=self.wm.heads.critic_features(state,ref,
+            xi[None].expand(H1,n,-1).reshape(-1,33),self.wm.spec,body_pos=body_pos)
+        # Insert the privileged joint-position error after invariant71.
+        dq=self.lib.ref(frame).joint_pos-state[:,13:42]
+        feat=torch.cat((x[:,:71],dq,x[:,71:]),-1).reshape(H1,n,184)
+        return feat,ro.goals,ro.e_root
 
     def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
         cfg = self.cfg
-        start = buffer.sample_starts(cfg.batch_size, cfg.history)
+        start = sample_valid_starts(buffer,self.lib,cfg.batch_size,cfg.history,cfg.horizon)
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------
         self.wm.requires_grad_(False)
         self.critic.requires_grad_(False)
         ro = imagine(self.wm, self.policy, self.lib, start, cfg.horizon, cfg.future_frames, obs_noise=cfg.obs_noise, step_fn=self.step_fn, anchor_obs=cfg.anchor_obs)
-        feat, goals, e_root = self._critic_inputs(ro)
+        feat, goals, e_root = self._critic_inputs(ro,start.xi)
         if cfg.use_critic:
-            v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
+            v_H = self.critic(feat[-1], goals[-1])
         else:
             v_H = None
         J = policy_objective(ro, v_H, cfg.gamma)
-        loss = -J / cfg.horizon
+        loss = -J
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         allreduce_grads(self.policy)
         gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
         torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
-        self.opt.step()
+        if torch.isfinite(gn):
+            self.opt.step()
         self.wm.requires_grad_(True)
         self.critic.requires_grad_(True)
 
@@ -89,6 +121,7 @@ class PolicyTrainer:
             "imag_survival_H": float(ro.survival[-1].mean().detach()),
             "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
             "policy_grad_norm": float(gn),
+            "policy_skipped_nonfinite": float(not torch.isfinite(gn)),
             "action_abs_mean": float(ro.actions.abs().mean().detach()),
         }
         for k, v in ro.reward_terms.items():
@@ -96,11 +129,12 @@ class PolicyTrainer:
 
         # ---- critic: fit to GAE targets of this rollout (targets fixed) ---------------------
         if cfg.use_critic:
+            self.critic.norm.update(torch.cat((feat.detach(),goals.detach()),-1))
             with torch.no_grad():
                 feat_d, goals_d, e_root_d = feat.detach(), goals.detach(), e_root.detach()
                 H1, n, _ = feat_d.shape
                 xi_rep = xi_norm[None].expand(H1, n, -1)
-                values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1), xi_rep.reshape(H1 * n, -1), e_root_d.reshape(H1 * n, -1)).reshape(H1, n)
+                values = self.critic(feat_d.reshape(H1 * n, -1), goals_d.reshape(H1 * n, -1)).reshape(H1, n)
                 targets = gae_targets(ro.rewards.detach(), ro.dhat[1:].detach(), values, cfg.gamma, cfg.gae_lambda)  # (H, n)
                 X_feat = feat_d[:-1].reshape(-1, feat_d.shape[-1])
                 X_goal = goals_d[:-1].reshape(-1, goals_d.shape[-1])
@@ -114,7 +148,7 @@ class PolicyTrainer:
                 perm = torch.randperm(N, device=Y.device)
                 for i in range(cfg.critic_minibatches):
                     idx = perm[i * mb : (i + 1) * mb]
-                    pred = self.critic(X_feat[idx], X_goal[idx], X_xi[idx], X_er[idx])
+                    pred = self.critic(X_feat[idx], X_goal[idx])
                     closs = torch.nn.functional.mse_loss(pred, Y[idx])
                     self.critic_opt.zero_grad(set_to_none=True)
                     closs.backward()

@@ -30,14 +30,14 @@ def main(batch: int = 2048, horizon: int = 32, modes: tuple[str, ...] = ("eager"
     lib = MotionLibrary(files, TRACKED_BODIES, q0, device=dev)
     fk = G1Kinematics(model, device=dev)
     lim = torch.as_tensor(model.jnt_range[1:], dtype=torch.float32, device=dev)
-    heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, lim, q0)
+    heads = AnalyticHeads(fk, TRACKED_BODIES, "pelvis", ROOT_BODY, lim, q0)
     wm = WorldModel(WorldModelCfg(), heads, dev)
     policy = Policy(PolicyCfg()).to(dev)
 
     # Synthetic start batch from library reference states.
     f = torch.randint(0, lib.num_frames - 100, (batch,), device=dev)
     qpos, qvel = lib.ref_qpos_qvel(f)
-    s0 = torch.cat([qpos, qvel], -1)
+    s0 = lib.ref71(f)
     start = StartBatch(
         state=s0,
         xi=torch.zeros(batch, 33, device=dev) + torch.tensor([0.75] + [0.0] * 32, device=dev),
@@ -45,6 +45,8 @@ def main(batch: int = 2048, horizon: int = 32, modes: tuple[str, ...] = ("eager"
         prev_action=torch.zeros(batch, 29, device=dev),
         hist_states=s0[None].expand(10, batch, 71).contiguous(),
         hist_actions=torch.zeros(10, batch, 29, device=dev),
+        hist_frames=f[None].expand(10,-1),
+        hist_xi=torch.zeros(10,batch,33,device=dev),
     )
     for mode in modes:
         step_fn = ImagStep(wm, q0, compile_mode=None if mode == "eager" else mode)

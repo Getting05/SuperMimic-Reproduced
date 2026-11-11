@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import json
 import time
+import os
+import random
+import numpy as np
+
+import torch.distributed as dist
 from dataclasses import asdict
 from pathlib import Path
 
@@ -13,8 +18,8 @@ from torch.utils.tensorboard import SummaryWriter
 from supermimic.config import TrainConfig
 from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
+from supermimic.envs.p2 import load_p2_model
 from supermimic.envs.mdp.motion_library import discover_npz
-from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic, Policy
@@ -25,10 +30,33 @@ from supermimic.world_model.wm_trainer import WorldModelTrainer
 from supermimic.world_model.world_model import WorldModel
 
 
+def execution_action(action, sigma):
+    return (action + sigma*torch.randn_like(action)).clamp(-20,20)
+
+
+
+WM_ONLY_UPDATES = 500
+
+
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
-        cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
+        import warnings
+        from supermimic.policy.nets import PolicyCfg
+        from supermimic.world_model.state_spec import StateSpecCfg
+        for name in ("obs_term_scale","goal_term_scale"):
+            if getattr(cfg.policy,name)!=getattr(PolicyCfg(),name):
+                warnings.warn(f"policy.{name} is deprecated and ignored; RunningNorm is active")
+        for name in ("err_scale","out_scale","in_scale","explicit_integration"):
+            if getattr(cfg.world_model.state_spec,name)!=getattr(StateSpecCfg(),name):
+                warnings.warn(f"state_spec.{name} is deprecated and ignored by Vibed dynamics")
+        if cfg.world_model.term_hidden!=(64,64) or cfg.world_model.term_loss_weight!=1.:
+            warnings.warn("learned termination config is deprecated and ignored")
+        if cfg.env.anchor_obs:
+            warnings.warn("anchor_obs adds 9D research input and is outside strict Vibed parity")
+        if cfg.env.p2_advanced_actuators:
+            warnings.warn("Advanced actuator delay has hidden state absent from WM71; parity baseline uses standard PD")
+        cfg.policy.goal_dim = cfg.env.future_frames * 73 + (9 if cfg.env.anchor_obs else 0)
         cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
         self.rank, local_rank, self.world = init_distributed()
         self.is_main = self.rank == 0
@@ -57,6 +85,8 @@ class Trainer:
             SuperMimicEnvCfgArgs(
                 npz_files=[str(f) for f in files],
                 num_envs=cfg.env.num_envs,
+                robot=cfg.env.robot,
+                p2_advanced_actuators=cfg.env.p2_advanced_actuators,
                 future_frames=cfg.env.future_frames,
                 episode_length_s=cfg.env.episode_length_s,
                 action_noise_std=cfg.env.action_noise_std,
@@ -64,22 +94,47 @@ class Trainer:
                 reset_noise=cfg.env.reset_noise,
                 domain_randomization=cfg.env.domain_randomization,
                 sampling_mode=cfg.env.sampling_mode,
+                sgs_target=cfg.env.sgs_target,
+                sgs_kappa=cfg.env.sgs_kappa,
+                sgs_temperature=cfg.env.sgs_temperature,
+                sgs_eps=cfg.env.sgs_eps,
+                sgs_history=cfg.env.sgs_history,
+                sgs_eval_steps=cfg.env.sgs_eval_steps,
+                sgs_root_pos_threshold=cfg.env.sgs_root_pos_threshold,
+                sgs_body_pos_threshold=cfg.env.sgs_body_pos_threshold,
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
+                library_device=cfg.data.library_device,
                 anchor_obs=cfg.env.anchor_obs,
+                policy_obs_ref_rot6d=cfg.policy.policy_obs_ref_rot6d,
                 seed=cfg.seed + 1000 * self.rank,
             ),
             device=self.device,
         )
         env = self.env
         self.command = env.command_manager.get_term("motion")
+        if cfg.env.sampling_mode == "sgs" and self.world > 1:
+            signatures = [None] * self.world
+            dist.all_gather_object(signatures, self.command.sgs_signature)
+            if len(set(signatures)) != 1:
+                rank_files = [None] * self.world
+                dist.all_gather_object(
+                    rank_files,
+                    Path(cfg.data.library).name if cfg.data.library else None,
+                )
+                rank_sharded = cfg.env.sgs_rank_sharded or os.environ.get("SUPERMIMIC_SGS_RANK_SHARDED") == "1"
+                from supermimic.training.sgs_rank_validation import validate_sgs_rank_libraries
+                validate_sgs_rank_libraries(signatures, rank_files, rank_sharded)
+                if self.is_main:
+                    print(f"[INFO] Per-rank SGS enabled: {rank_files}; each rank maintains its own bin statistics")
         self.lib = self.command.library
         self.recorder = env.recorder_manager.get_term("replay")
         self.buffer = self.recorder.buffer
         robot = env.scene["robot"]
 
-        fk = G1Kinematics(load_g1_model(), device=self.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        fk_model = load_p2_model() if cfg.env.robot == "p2" else load_g1_model()
+        fk = G1Kinematics(fk_model, device=self.device)
+        heads = AnalyticHeads(fk, self.command.cfg.body_names, self.command.cfg.anchor_body_name, self.command.cfg.root_body_name, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
@@ -95,6 +150,7 @@ class Trainer:
         self.ep_reward_sum = torch.zeros(env.num_envs, device=self.device)
         self.ep_len = torch.zeros(env.num_envs, device=self.device)
         self.max_step_reward = heads.reward_cfg.max_step_reward
+        self.env_step_count = 0
         self.iteration = 0
         self.start_iteration = 0  # warm-up (buffer refill) counts from here, also after a resume
         self.num_updates = 0
@@ -105,10 +161,28 @@ class Trainer:
     # ------------------------------------------------------------------ checkpoints
 
     def save(self, name: str = "ckpt_latest.pt") -> None:
+        rank_state=dict(cpu_rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state(self.device),
+                        numpy_rng=np.random.get_state(),python_rng=random.getstate(),
+                        utd_acc=self._utd_acc)
+        if self.command.sgs_sampler is not None:
+            rank_state["sampler"]=self.command.sgs_state_dict()
+        else:
+            rank_state["bin_return"]=self.command.bin_return
+            rank_state["bin_memory"]=self.command.bin_memory
+        rank_state = self._checkpoint_cpu_state(rank_state)
+        rank_states = [None] * self.world if self.is_main else None
+        if self.world > 1:
+            dist.gather_object(rank_state, rank_states, dst=0)
+        else:
+            rank_states = [rank_state]
         if not self.is_main:
             return
-        torch.save(
+        self._atomic_save(
             {
+                "format_version": "vibed-parity-state71-v1",
+                "env_step_count": self.env_step_count,
+                "wm_update_count": self.iteration,
+                "phase": "wm_only" if self.iteration < WM_ONLY_UPDATES else "joint",
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
@@ -120,20 +194,76 @@ class Trainer:
                 "bin_return": self.command.bin_return,
                 "bin_memory": self.command.bin_memory,
                 "config": asdict(self.cfg),
+                "rank_states": rank_states,
+                "checkpoint_layout": "single-file-rank-states-v1",
             },
             self.log_dir / name,
         )
 
+    @staticmethod
+    def _checkpoint_cpu_state(value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {k: Trainer._checkpoint_cpu_state(v) for k, v in value.items()}
+        if isinstance(value, tuple):
+            return tuple(Trainer._checkpoint_cpu_state(v) for v in value)
+        if isinstance(value, list):
+            return [Trainer._checkpoint_cpu_state(v) for v in value]
+        return value
+
+    @staticmethod
+    def _atomic_save(state, path):
+        temporary = path.with_name(path.name + ".tmp")
+        torch.save(state, temporary)
+        os.replace(temporary, path)
+
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        self.env_step_count=ck.get("env_step_count",0)
+        if ck.get("format_version") != "vibed-parity-state71-v1":
+            raise ValueError("Incompatible checkpoint: Vibed71 state layout required; old dev/FSQ checkpoints cannot resume")
+        if ck["config"]["env"].get("robot", "g1") != self.cfg.env.robot:
+            raise ValueError("Checkpoint robot does not match the training robot")
+        warm_start_sgs = False
+        if ck["config"]["env"].get("sampling_mode") != self.cfg.env.sampling_mode:
+            raise ValueError("Resume requires the same sampler mode")
+        if self.cfg.env.robot == "p2" and not warm_start_sgs:
+            previous_mode = ck["config"]["env"].get("p2_advanced_actuators")
+            if previous_mode is None or previous_mode != self.cfg.env.p2_advanced_actuators:
+                raise ValueError("P2 resume requires matching actuator dynamics and PD gains")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
+        if "rank_states" in ck:
+            if len(ck["rank_states"]) != self.world:
+                raise ValueError("Full-state resume requires matching world size")
+            state = self._checkpoint_cpu_state(ck["rank_states"][self.rank])
+        else:
+            files=ck.get("rank_files",[])
+            if len(files)!=self.world:raise ValueError("Resume requires matching world size and rank files")
+            state=torch.load(Path(path).parent/files[self.rank],map_location="cpu",weights_only=False)
+        if self.command.sgs_sampler is not None:
+            self.command.load_sgs_state_dict(state["sampler"])
+        torch.set_rng_state(state["cpu_rng"])
+        torch.cuda.set_rng_state(state["cuda_rng"],self.device)
+        np.random.set_state(state["numpy_rng"]);random.setstate(state["python_rng"])
+        self._utd_acc=state["utd_acc"]
         self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
         self.policy_trainer.opt.load_state_dict(ck["policy_opt"])
         self.policy_trainer.critic_opt.load_state_dict(ck["critic_opt"])
-        self.command.bin_return.copy_(ck["bin_return"])
-        self.command.bin_memory.copy_(ck["bin_memory"])
+        if self.command.sgs_sampler is None:
+            if "bin_return" in state:
+                sampler_state = state
+            elif self.rank == 0:
+                sampler_state = ck
+            else:
+                raise ValueError("Legacy checkpoint lacks this rank's return-sampler statistics")
+            for key in ("bin_return", "bin_memory"):
+                target = getattr(self.command, key)
+                if target.shape != sampler_state[key].shape:
+                    raise ValueError(f"Checkpoint {key} does not match this rank's data shard")
+                target.copy_(sampler_state[key])
         self.iteration = ck["iteration"]
         self.start_iteration = self.iteration
         self.num_updates = ck["num_updates"]
@@ -143,9 +273,40 @@ class Trainer:
 
     @torch.no_grad()
     def act(self, obs) -> torch.Tensor:
+        self.policy.obs_norm.update(obs["policy"].reshape(-1,self.cfg.policy.history,self.policy.obs_dim)[:,-1])
+        self.policy.goal_norm.update(obs["goal"])
         return self.policy(obs["policy"], obs["goal"])
 
     def run(self) -> None:
+        self.wandb_run = None
+        self._auto_eval = None
+        self._final_eval_checkpoint = None
+        if self.cfg.evaluation.enabled and self.is_main:
+            from supermimic.eval.automatic import AutoEvaluator
+            self._auto_eval = AutoEvaluator(self.cfg.evaluation, self.log_dir)
+        try:
+            if self.cfg.evaluation.enabled and self.cfg.evaluation.on_start:
+                self.save("ckpt_eval_initial.pt")
+                if self._auto_eval is not None:
+                    self._auto_eval.submit(self.log_dir / "ckpt_eval_initial.pt")
+            if self.is_main and self.cfg.wandb.enabled:
+                import wandb
+                self.wandb_run = wandb.init(project=self.cfg.wandb.project, entity=self.cfg.wandb.entity,
+                                           name=self.cfg.run_name, dir=str(self.log_dir),
+                                           config=json.loads(json.dumps(asdict(self.cfg), default=str)))
+            self._run()
+        finally:
+            if self._auto_eval is not None:
+                self._auto_eval.finish()
+                if self._final_eval_checkpoint is not None:
+                    self._auto_eval.submit(self._final_eval_checkpoint)
+                    self._auto_eval.finish()
+            if self.writer is not None:
+                self.writer.close()
+            if self.wandb_run is not None:
+                self.wandb_run.finish()
+
+    def _run(self) -> None:
         cfg = self.cfg
         sch = cfg.schedule
         env = self.env
@@ -157,12 +318,19 @@ class Trainer:
         finished_returns: list[float] = []
         finished_lens: list[float] = []
         last_log = time.time()
+        collected_since_reset = 0
+        reason_counts={name:torch.zeros((),device=self.device) for name in env.termination_manager.active_terms}
 
         while self.iteration < sch.total_iterations:
             # ---------------- (1) collect one vectorised env step
             t0 = time.perf_counter()
             action = self.act(obs)
+            action = execution_action(action, cfg.env.action_noise_std)
             obs, rew, term, tout, extras = env.step(action)
+            row=(self.buffer.ptr-1)%self.buffer.T
+            self.wm.update_normalization(self.buffer.s[row],self.buffer.s1[row],self.buffer.a[row],self.buffer.xi[row])
+            for name,count in reason_counts.items():
+                count.add_(env.termination_manager.get_term(name).sum())
             self.ep_reward_sum += rew
             self.ep_len += 1
             done = term | tout
@@ -176,14 +344,16 @@ class Trainer:
                 self.ep_len[ids] = 0.0
             torch.cuda.synchronize()
             timers["sim"] += time.perf_counter() - t0
-            self.iteration += 1
+            self.env_step_count += 1
+            collected_since_reset += 1
+            did_update = False
 
             # ---------------- (2)+(3) updates at the configured update-to-data ratio
-            if self.iteration - self.start_iteration >= sch.warmup_iterations:
+            if collected_since_reset > sch.warmup_iterations:
                 self._utd_acc += sch.updates_per_env_step
-                while self._utd_acc >= 1.0:
+                while self._utd_acc >= 1.0 and self.iteration < sch.total_iterations:
                     self._utd_acc -= 1.0
-                    lr = cosine_lr(self.iteration, sch.total_iterations, cfg.wm_trainer.lr, sch.lr_final_ratio, sch.lr_decay_fraction)
+                    lr = cosine_lr(self.iteration, 320000, cfg.wm_trainer.lr, sch.lr_final_ratio, 250000/320000)
                     self.wm_trainer.set_lr(lr)
                     self.policy_trainer.set_lr(lr * cfg.policy_trainer.lr / cfg.wm_trainer.lr)
                     t0 = time.perf_counter()
@@ -191,11 +361,15 @@ class Trainer:
                     torch.cuda.synchronize()
                     timers["wm"] += time.perf_counter() - t0
                     t0 = time.perf_counter()
-                    for _ in range(sch.policy_updates_per_wm_update):
-                        m_pi = self.policy_trainer.update(self.buffer)
+                    m_pi = {}
+                    if self.iteration >= WM_ONLY_UPDATES:
+                        for _ in range(sch.policy_updates_per_wm_update):
+                            m_pi = self.policy_trainer.update(self.buffer)
                     torch.cuda.synchronize()
                     timers["policy"] += time.perf_counter() - t0
                     self.num_updates += 1
+                    self.iteration += 1
+                    did_update = True
                     for k, v in m_wm.items():
                         agg[f"wm/{k}"] = agg.get(f"wm/{k}", 0.0) + v
                     for k, v in m_pi.items():
@@ -203,6 +377,8 @@ class Trainer:
                     agg["lr"] = lr
                     agg_n += 1
 
+            if not did_update:
+                continue
             # ---------------- logging / checkpoints
             if self.iteration % sch.log_interval == 0:
                 it = self.iteration
@@ -215,35 +391,58 @@ class Trainer:
                     n_finished = int(round(cnt))
                 else:
                     n_finished = len(finished_returns)
+                metrics = {}
                 if not self.is_main:
                     agg, agg_n = {}, 0
                     finished_returns, finished_lens = [], []
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
                     for k, v in agg.items():
-                        self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
+                        metrics[k] = v / (agg_n if k != "lr" else 1)
                 if not self.is_main:
                     tr = float("nan")
                 elif finished_returns:
                     tr = sum(finished_returns) / len(finished_returns)
-                    self.writer.add_scalar("train/episode_norm_return", tr, it)
-                    self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
+                    metrics["train/episode_norm_return"] = tr
+                    metrics["train/episode_len"] = sum(finished_lens) / max(len(finished_lens), 1)
                 else:
                     tr = float("nan")
                 with torch.no_grad():
-                    if self.is_main and self.buffer.size > 2048:
+                    if self.is_main and min(self.buffer.rows,self.buffer.T) >= 8:
                         err = self.wm_trainer.online_error(self.buffer, n=1024, k=8)
-                        self.writer.add_scalar("wm/online_nse_1step", float(err[0]), it)
-                        self.writer.add_scalar("wm/online_nse_8step", float(err[-1]), it)
+                        metrics["wm/online_nse_1step"] = float(err[0])
+                        metrics["wm/online_nse_8step"] = float(err[-1])
                     else:
                         err = None
                 if self.is_main:
+                    for name,count in reason_counts.items():
+                        metrics[f"train/rank0_termination/{name}"]=float(count)
                     for k, v in timers.items():
-                        self.writer.add_scalar(f"time/{k}_s_per_iter", v / sch.log_interval, it)
-                    self.writer.add_scalar("time/hours", elapsed / 3600, it)
-                    self.writer.add_scalar("time/updates", self.num_updates, it)
-                    self.writer.add_scalar("sampler/entropy", float(self.command.metrics["sampling_entropy"][0]), it)
-                    self.writer.add_scalar("sampler/bin_return_mean", float(self.command.bin_return.mean()), it)
+                        metrics[f"time/{k}_s_per_iter"] = v / sch.log_interval
+                    metrics["gpu/peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 1024**3
+                    metrics["gpu/reserved_gib"] = torch.cuda.memory_reserved() / 1024**3
+                    metrics["gpu/free_gib"] = torch.cuda.mem_get_info()[0] / 1024**3
+                    metrics["time/env_steps_per_s"] = it * env.num_envs * self.world / elapsed
+                    metrics["time/hours"] = elapsed / 3600
+                    metrics["time/updates"] = self.num_updates
+                    metrics["env_step_count"] = self.env_step_count
+                    metrics["wm_update_count"] = self.iteration
+                    metrics["sim_transitions"] = self.env_step_count * env.num_envs * self.world
+                    metrics["sampler/entropy"] = float(self.command.metrics["sampling_entropy"][0])
+                    metrics["sampler/bin_return_mean"] = float(self.command.bin_return.mean())
+                    if self.command.sgs_sampler is not None:
+                        sgs, rates, clip_rates = self.command.sgs_logs()
+                        metrics.update({name: float(value) for name, value in sgs.items()})
+                        self.writer.add_histogram("sgs/success_rate_histogram", rates, it)
+                        self.writer.add_histogram("sgs/clip_success_rate_histogram", clip_rates, it)
+                        if self.wandb_run is not None:
+                            import wandb
+                            self.wandb_run.log({"sgs/success_rate_histogram": wandb.Histogram(rates.cpu().numpy()),
+                                                "sgs/clip_success_rate_histogram": wandb.Histogram(clip_rates.cpu().numpy())}, step=it, commit=False)
+                    for name, value in metrics.items():
+                        self.writer.add_scalar(name, value, it)
+                    if self.wandb_run is not None:
+                        self.wandb_run.log(metrics, step=it)
                     dt_log = time.time() - last_log
                     last_log = time.time()
                     msg = (
@@ -257,9 +456,20 @@ class Trainer:
                 agg, agg_n = {}, 0
                 finished_returns, finished_lens = [], []
                 timers = {k: 0.0 for k in timers}
+                for count in reason_counts.values():count.zero_()
             if self.iteration % sch.checkpoint_interval == 0:
                 self.save("ckpt_latest.pt")
                 self.save(f"ckpt_{self.iteration:07d}.pt")
+            if cfg.evaluation.enabled:
+                if self._auto_eval is not None:
+                    self._auto_eval.poll()
+                if self.iteration % cfg.evaluation.interval == 0:
+                    # All ranks participate in save(), even though only rank 0
+                    # launches evaluation. Each job receives an immutable file.
+                    name = f"ckpt_eval_{self.iteration:07d}.pt"
+                    self.save(name)
+                    if self._auto_eval is not None:
+                        self._auto_eval.submit(self.log_dir / name)
             if sch.max_hours is not None and self.iteration % sch.log_interval == 0:
                 stop = float((time.time() - t_start) / 3600 > sch.max_hours)
                 if self.world > 1:
@@ -269,6 +479,10 @@ class Trainer:
                         print("[INFO] max_hours reached, stopping")
                     break
         self.save("ckpt_latest.pt")
+        if cfg.evaluation.enabled and cfg.evaluation.on_finish:
+            name = f"ckpt_eval_final_{self.iteration:07d}.pt"
+            self.save(name)
+            self._final_eval_checkpoint = self.log_dir / name
         if self.writer is not None:
             self.writer.flush()
         finalize()

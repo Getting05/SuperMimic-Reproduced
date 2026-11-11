@@ -33,13 +33,12 @@ def test_state_spec_identity_and_errors():
     s_rot = s.clone()
     s_rot[:, 0:2] += torch.randn(64, 2, dtype=torch.float64)
     s_rot[:, 3:7] = quat_mul(qy, s[:, 3:7])
-    s_rot[:, 36:39] = quat_apply(qy, s[:, 36:39])
+    s_rot[:, 7:10] = quat_apply(qy, s[:, 7:10])
+    s_rot[:, 10:13] = quat_apply(qy, s[:, 10:13])
     np.testing.assert_allclose(spec.canonical(s_rot).numpy(), spec.canonical(s).numpy(), atol=1e-9)
-    # Explicit integration with zero delta = constant-velocity extrapolation.
-    spec2 = StateSpec(StateSpecCfg(explicit_integration=True), dev, torch.float64)
-    s3 = spec2.integrate(s, torch.zeros(64, 70, dtype=torch.float64))
-    np.testing.assert_allclose(s3[:, 0:3].numpy(), (s[:, 0:3] + 0.02 * s[:, 36:39]).numpy(), atol=1e-12)
-    np.testing.assert_allclose(s3[:, 7:36].numpy(), (s[:, 7:36] + 0.02 * s[:, 42:71]).numpy(), atol=1e-12)
+    # Direct increments are identity at zero; explicit_integration is deprecated.
+    spec2 = StateSpec(StateSpecCfg(),dev,torch.float64)
+    torch.testing.assert_close(spec2.integrate(s,torch.zeros(64,70,dtype=torch.float64)),s)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or not NPZ.exists(), reason="needs CUDA + LAFAN1 npz")
@@ -63,7 +62,7 @@ def test_world_model_overfits_replay_windows():
         rec = env.recorder_manager.get_term("replay")
         robot = env.scene["robot"]
         fk = G1Kinematics(load_g1_model(), device=env.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        heads = AnalyticHeads(fk, TRACKED_BODIES, "pelvis", ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         wm = WorldModel(WorldModelCfg(hidden=(512, 512, 512)), heads, env.device)
         lib = env.command_manager.get_term("motion").library
         tr = WorldModelTrainer(wm, lib, WMTrainerCfg(batch_size=512, batches_per_update=1, lr=1e-3))

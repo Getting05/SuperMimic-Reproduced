@@ -1,0 +1,18 @@
+checkpoint = "logs/run/ckpt_latest.pt"
+output_dir = "evals/gpu"
+metrics = ["pelvis_position", "pelvis_orientation", "body_position_world", "body_position_reanchored", "joint_position", "joint_velocity"]
+reward_terms = true
+
+[[datasets]]
+name = "val"
+path = "data/motions/val.pt"
+format = "packed"
+
+[resources]
+device = "cuda"
+gpu_ids = [0, 1] # physical GPU IDs; use [0] for one GPU
+workers = 2 # default 1 expands to GPU count; larger counts must be a multiple
+threads_per_worker = 1
+cpu_count = 4
+num_envs = 128
+library_device = "cpu"

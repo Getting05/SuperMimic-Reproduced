@@ -1,0 +1,21 @@
+# Partial training defaults; existing CLI flags override this file.
+run_name = "p2_fsq"
+
+[env]
+robot = "p2"
+num_envs = 8192
+p2_advanced_actuators = false
+
+[policy]
+fsq = true
+policy_obs_ref_rot6d = false
+
+[evaluation]
+enabled = false # enable after editing configs/eval/cpu.toml dataset paths
+interval = 4000
+on_start = false
+on_finish = true
+wait_on_finish = true
+config_file = "configs/eval/cpu.toml"
+# Alternatively omit config_file and configure [evaluation.settings],
+# [[evaluation.settings.datasets]], [evaluation.settings.resources], etc.

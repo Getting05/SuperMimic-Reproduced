@@ -6,6 +6,12 @@
 from __future__ import annotations
 
 import os
+import argparse
+from pathlib import Path
+
+# Preserve the launcher's resource inventory before torchrun narrows rank affinity.
+os.environ.setdefault("SM_EVAL_ALLOWED_CPU_IDS", ",".join(map(str, sorted(os.sched_getaffinity(0)))))
+os.environ.setdefault("SM_EVAL_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES", ""))
 
 # Under torchrun, pin each rank to its own GPU *before* CUDA/warp initialise: MuJoCo Warp and
 # mjlab's simulation always run on the first visible device, so cfg.device alone is not enough.
@@ -41,10 +47,24 @@ from supermimic.config import TrainConfig
 
 
 def main() -> None:
-    cfg = tyro.cli(TrainConfig)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--config", type=Path)
+    known, remaining = parser.parse_known_args()
+    from supermimic.config_io import load_config
+    defaults = load_config(known.config, TrainConfig()) if known.config else TrainConfig()
+    cfg = tyro.cli(TrainConfig, default=defaults, args=remaining)
+    if cfg.evaluation.enabled:
+        if cfg.evaluation.interval < 1:
+            raise ValueError("evaluation.interval must be positive")
+        from supermimic.eval.config import EvalConfig
+        settings = load_config(cfg.evaluation.config_file, EvalConfig()) if cfg.evaluation.config_file else cfg.evaluation.settings
+        settings.validate()
     from supermimic.training.loop import Trainer
 
-    Trainer(cfg).run()
+    trainer = Trainer(cfg)
+    if cfg.resume is None and os.environ.get("SM_SAVE_INITIAL_CHECKPOINT") == "1":
+        trainer.save("ckpt_initial.pt")
+    trainer.run()
 
 
 if __name__ == "__main__":

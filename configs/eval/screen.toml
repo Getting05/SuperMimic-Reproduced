@@ -1,0 +1,35 @@
+checkpoint = "logs/run/ckpt_latest.pt"
+output_dir = "evals/screen"
+metrics = ["pelvis_position", "body_position_world", "body_position_root_relative", "joint_position"]
+reward_terms = false
+
+[[datasets]]
+name = "train"
+path = "data/motions/train.pt"
+format = "packed"
+
+[[datasets]]
+name = "val"
+path = "data/motions/val.pt"
+format = "packed"
+
+[[datasets]]
+name = "test"
+path = "data/motions/test.pt"
+format = "packed"
+
+[resources]
+device = "cpu"
+cpu_fraction = 0.70
+workers = 32
+threads_per_worker = 1
+num_envs = 8
+library_device = "cpu"
+
+[quality]
+enabled = true
+min_completion = 0.98
+[quality.max_errors]
+pelvis_position = 0.30
+body_position_root_relative = 0.25
+joint_position = 0.6981317007977318
