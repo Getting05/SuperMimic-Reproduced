@@ -117,7 +117,16 @@ class Trainer:
             signatures = [None] * self.world
             dist.all_gather_object(signatures, self.command.sgs_signature)
             if len(set(signatures)) != 1:
-                raise ValueError("SGS ranks must load the same complete MotionLibrary in the same order")
+                rank_files = [None] * self.world
+                dist.all_gather_object(
+                    rank_files,
+                    Path(cfg.data.library).name if cfg.data.library else None,
+                )
+                rank_sharded = cfg.env.sgs_rank_sharded or os.environ.get("SUPERMIMIC_SGS_RANK_SHARDED") == "1"
+                from supermimic.training.sgs_rank_validation import validate_sgs_rank_libraries
+                validate_sgs_rank_libraries(signatures, rank_files, rank_sharded)
+                if self.is_main:
+                    print(f"[INFO] Per-rank SGS enabled: {rank_files}; each rank maintains its own bin statistics")
         self.lib = self.command.library
         self.recorder = env.recorder_manager.get_term("replay")
         self.buffer = self.recorder.buffer

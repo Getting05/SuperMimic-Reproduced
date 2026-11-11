@@ -97,3 +97,17 @@ and the same SGS_SMOKE_OUTPUT.
 The smoke script uses two environments, small batches and short horizons for
 training checks, then exercises the standard 50-step reset horizon and replay
 windows in the single-rank case. It writes only under SGS_SMOKE_OUTPUT.
+
+
+## Optional rank-sharded SGS for DDP
+
+By default, all ranks in an SGS DDP run must load an identical MotionLibrary.
+When training with independent packed files `rank_00.pt`, `rank_01.pt`, ...
+instead, enable `--env.sgs-rank-sharded` (TOML: `[env] sgs_rank_sharded = true`).
+Each rank keeps its own SGS bins and sampling statistics; only model parameters
+are synchronized through DDP. Files must be named in rank order and have
+different contents. Mixed/repeated libraries are rejected.
+
+The legacy `SUPERMIMIC_SGS_RANK_SHARDED=1` environment variable remains
+accepted for older launch scripts. Leave sharding disabled for shared datasets.
+Full-state checkpoints already store per-rank sampler state for correct resume.

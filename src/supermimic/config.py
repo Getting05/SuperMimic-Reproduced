@@ -35,6 +35,7 @@ class EnvCfg:
     reset_noise: bool = True
     domain_randomization: bool = True
     sampling_mode: str = "return"
+    sgs_rank_sharded: bool = False  # allow distinct rank_XX.pt libraries; per-rank SGS stats
     sgs_target: float = 0.66
     sgs_kappa: float = 5.0
     sgs_temperature: float = 2.0
